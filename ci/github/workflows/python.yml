@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    
+    - name: Lint with ruff
+      run: ruff check src/ tests/
+    
+    - name: Format check with black
+      run: black --check src/ tests/
+    
+    - name: Type check with mypy
+      run: mypy src/
+      continue-on-error: true
+    
+    - name: Test with pytest
+      run: pytest
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+        FASTFOREX_KEY: ${{ secrets.FASTFOREX_KEY }}
+        NAVASAN_API_KEY: ${{ secrets.NAVASAN_API_KEY }}
+

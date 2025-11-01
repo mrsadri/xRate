@@ -1,0 +1,84 @@
+# 🧠 Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+**/xrate.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+*.log
+
+# 🧩 Virtual environments
+.venv/
+env/
+venv/
+ENV/
+.venv.bak/
+
+# ⚙️ VSCode / PyCharm
+.vscode/
+.idea/
+
+# 🔒 Credentials and configs
+.env
+*.env
+.env.*
+!.env.example
+config.json
+secrets.json
+
+# 🔑 SSH Keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.ppk
+
+# 🧪 Tests and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+
+# 🧰 OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 📦 Packaging
+*.tar.gz
+*.zip
+
+# 🪶 Jupyter / Notebooks
+.ipynb_checkpoints
+
+# 🗃️ Logs and temp files
+*.tmp
+*.bak
+*.swp
+*.swo
+*.pid
+data/bot.pid
+data/*.json
+!data/samples/
+logs/
+*.log
+*.log.*
+
+# 📊 Data files (user-generated)
+data/last_state.json
+data/stats.json
+data/admin_store.json
+data/language.json
+
+# 🪄 Miscellaneous
+# Byte-compiled / optimized / DLL files
+__pycache__/
