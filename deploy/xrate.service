@@ -18,7 +18,7 @@
 
 [Unit]
 Description=XRate Telegram Bot - Market Rate Monitor
-Documentation=https://github.com/masihsadri/xrate
+Documentation=https://github.com/mrsadri/xRate
 After=network.target
 Wants=network-online.target
 

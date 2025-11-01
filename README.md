@@ -185,7 +185,7 @@ The bot uses **4 providers** with intelligent fallback mechanisms:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/masihsadri/xrate.git
+   git clone https://github.com/mrsadri/xRate.git
    cd xrate
    ```
 
@@ -982,7 +982,7 @@ python -c "from xrate.adapters.providers.fastforex import FastForexProvider; pri
 
 MIT License © 2025 **Masih Sadri**
 
-[github.com/masihsadri](https://github.com/masihsadri)
+[github.com/mrsadri](https://github.com/mrsadri)
 
 ---
 
@@ -997,4 +997,4 @@ MIT License © 2025 **Masih Sadri**
 
 ---
 
-*Last updated: January 27, 2025*
+*Last updated: November 2, 2025*
