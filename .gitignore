@@ -78,6 +78,7 @@ data/last_state.json
 data/stats.json
 data/admin_store.json
 data/language.json
+data/*.json.corrupt
 
 # 🪄 Miscellaneous
 # Byte-compiled / optimized / DLL files

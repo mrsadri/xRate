@@ -7,6 +7,6 @@ and Iranian market data (USD/EUR/Gold in Toman) with intelligent posting,
 health monitoring, and comprehensive error handling.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Masih Sadri"
 

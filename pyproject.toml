@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xrate"
-version = "1.0.0"
+version = "1.1.0"
 description = "Advanced Telegram Exchange Rate Bot for EUR→USD and Iranian market data"
 readme = "README.md"
 requires-python = ">=3.9"

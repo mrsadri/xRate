@@ -225,12 +225,12 @@ make check      # Run all checks
 
 ## 📚 **Documentation**
 
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and changes
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - Deployment instructions
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
 - **[deploy/SERVER_DEPLOYMENT.md](deploy/SERVER_DEPLOYMENT.md)** - Server deployment details
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Architecture details (if exists)
-- **[docs/API_PROVIDERS.md](docs/API_PROVIDERS.md)** - API provider details (if exists)
-- **[docs/COMMANDS.md](docs/COMMANDS.md)** - Command documentation (if exists)
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Architecture details
+- **[docs/API_PROVIDERS.md](docs/API_PROVIDERS.md)** - API provider details
 
 ---
 
@@ -297,4 +297,6 @@ MIT License © 2025 **Masih Sadri**
 
 ---
 
-*Last updated: November 2025*
+*Last updated: November 2025*  
+*Current version: 1.1.0*  
+*See [CHANGELOG.md](CHANGELOG.md) for version history*
