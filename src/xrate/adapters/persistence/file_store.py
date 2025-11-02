@@ -133,16 +133,59 @@ def load_last() -> Optional[LastSnapshot]:
     """
     Load last snapshot from persistent storage.
     
+    Handles corrupt files gracefully by:
+    1. Attempting to load the file
+    2. If JSON decode fails, backing up the corrupt file and returning None
+    3. If schema validation fails, using defaults for missing fields
+    
     Returns:
         LastSnapshot if file exists and is valid, None otherwise
     """
+    import logging
+    log = logging.getLogger(__name__)
+    
     p = _state_path()
     if not p.exists():
         return None
+    
     try:
         with p.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return LastSnapshot.from_json(data)
-    except Exception:
-        # Corrupt file? Ignore and start fresh.
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError as e:
+                # Corrupt JSON - backup and return None
+                backup_path = p.with_suffix(".json.corrupt")
+                try:
+                    import shutil
+                    shutil.copy2(p, backup_path)
+                    log.warning("State file corrupted (JSON decode error), backed up to %s: %s", 
+                               backup_path, e)
+                    # Remove corrupt file
+                    p.unlink()
+                except Exception as backup_error:
+                    log.error("Failed to backup corrupt state file: %s", backup_error)
+                return None
+        
+        try:
+            return LastSnapshot.from_json(data)
+        except (KeyError, ValueError, TypeError) as e:
+            # Schema mismatch - try to recover with defaults
+            log.warning("State file schema mismatch, attempting recovery: %s", e)
+            try:
+                # Attempt to create snapshot with defaults for missing fields
+                return LastSnapshot.from_json({
+                    "usd_toman": data.get("usd_toman", 0),
+                    "eur_toman": data.get("eur_toman", 0),
+                    "gold_1g_toman": data.get("gold_1g_toman", 0),
+                    "eurusd_rate": data.get("eurusd_rate", 0.0),
+                    "tether_price_toman": data.get("tether_price_toman", 0),
+                    "tether_24h_ch": data.get("tether_24h_ch", 0.0),
+                    "ts": data.get("ts"),
+                })
+            except Exception as recovery_error:
+                log.error("Failed to recover state file: %s", recovery_error)
+                return None
+    except Exception as e:
+        # Any other error - log and return None
+        log.error("Unexpected error loading state file: %s", e, exc_info=True)
         return None

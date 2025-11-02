@@ -208,26 +208,44 @@ def _check_rate_limit(update: Update, limit_type: str) -> bool:
     """
     Check if user is within configured rate limits.
     
+    Uses namespaced buckets to prevent rate limit conflicts between different command types:
+    - public:user:123 for public user commands
+    - admin:user:123 for admin commands
+    - health:chat:123 for health checks (per chat to handle group spam)
+    
     Args:
         update: Telegram update object
-        limit_type: Type of rate limit to check (e.g., "user_command", "admin_command")
+        limit_type: Type of rate limit to check (e.g., "user_command", "admin_command", "health_check")
         
     Returns:
         True if allowed, False if rate limit exceeded
     """
     user_id = str(update.effective_user.id)
+    chat_id = str(update.effective_chat.id) if update.effective_chat else user_id
+    
     config = RATE_LIMITS.get(limit_type)
     
     if not config:
         return True  # No rate limit configured
     
-    if not rate_limiter.is_allowed(user_id, config):
+    # Create namespaced identifier based on limit type
+    # This ensures admin commands don't share buckets with public commands
+    if limit_type == "admin_command":
+        identifier = f"admin:user:{user_id}"
+    elif limit_type == "health_check":
+        # Use chat_id for health checks to prevent group spam from affecting individual users
+        identifier = f"health:chat:{chat_id}"
+    else:
+        # Default: public user commands
+        identifier = f"public:user:{user_id}"
+    
+    if not rate_limiter.is_allowed(identifier, config):
         logger.warning(
-            "Rate limit exceeded for user %s, limit_type=%s (remaining=%s, reset_time=%s)",
-            user_id,
+            "Rate limit exceeded for %s (type=%s, remaining=%s, reset_time=%s)",
+            identifier,
             limit_type,
-            rate_limiter.get_remaining_requests(user_id, config),
-            rate_limiter.get_reset_time(user_id, config)
+            rate_limiter.get_remaining_requests(identifier, config),
+            rate_limiter.get_reset_time(identifier, config)
         )
         return False
     

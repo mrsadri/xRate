@@ -134,6 +134,57 @@ class BRSAPIProvider(RateProvider):
                 return item
         return None
 
+    def _normalize_price_value(self, value: Any) -> Optional[float]:
+        """
+        Normalize price value from various formats (string with K suffix, number, etc.).
+        
+        Handles formats like:
+        - "108.4K" -> 108400.0
+        - "108400" -> 108400.0
+        - 108400 -> 108400.0
+        - "108.8K" -> 108800.0
+        
+        Args:
+            value: Raw value from API (can be string, int, float, or dict with 'value' key)
+            
+        Returns:
+            Normalized float value, or None if cannot parse
+        """
+        if value is None:
+            return None
+        
+        # If dict, try to extract value
+        if isinstance(value, dict):
+            value = value.get("price") or value.get("value") or value.get("value_price")
+            if value is None:
+                return None
+        
+        # Convert to string for parsing
+        str_value = str(value).strip().replace(",", "")
+        
+        # Handle "K" suffix (thousands)
+        if str_value.upper().endswith("K"):
+            try:
+                num_part = float(str_value[:-1])
+                return num_part * 1000.0
+            except (ValueError, IndexError):
+                pass
+        
+        # Handle "M" suffix (millions)
+        if str_value.upper().endswith("M"):
+            try:
+                num_part = float(str_value[:-1])
+                return num_part * 1_000_000.0
+            except (ValueError, IndexError):
+                pass
+        
+        # Try direct conversion
+        try:
+            return float(str_value)
+        except (ValueError, TypeError):
+            log.warning("Failed to normalize price value: %r", value)
+            return None
+    
     def get_usd_toman(self) -> Optional[int]:
         """
         Get USD price in Toman from BRS API.
@@ -145,8 +196,25 @@ class BRSAPIProvider(RateProvider):
             data = self.get_latest_raw()
             currency_list = data.get("currency", [])
             usd_item = self._find_item_by_symbol(currency_list, "USD")
-            if usd_item and "price" in usd_item:
-                return int(float(usd_item["price"]))
+            if not usd_item:
+                # Try alternative symbol names
+                for alt_symbol in ["usd", "USDT", "USD/IRR"]:
+                    usd_item = self._find_item_by_symbol(currency_list, alt_symbol)
+                    if usd_item:
+                        break
+            
+            if usd_item:
+                # Try multiple field names for price
+                price_value = None
+                for field_name in ["price", "value", "value_price", "last_price"]:
+                    if field_name in usd_item:
+                        price_value = self._normalize_price_value(usd_item[field_name])
+                        if price_value is not None:
+                            break
+                
+                if price_value is not None and price_value > 0:
+                    return int(price_value)
+            
             log.warning("USD not found in BRS API response")
             return None
         except Exception as e:
@@ -164,8 +232,25 @@ class BRSAPIProvider(RateProvider):
             data = self.get_latest_raw()
             currency_list = data.get("currency", [])
             eur_item = self._find_item_by_symbol(currency_list, "EUR")
-            if eur_item and "price" in eur_item:
-                return int(float(eur_item["price"]))
+            if not eur_item:
+                # Try alternative symbol names
+                for alt_symbol in ["eur", "EUR/IRR"]:
+                    eur_item = self._find_item_by_symbol(currency_list, alt_symbol)
+                    if eur_item:
+                        break
+            
+            if eur_item:
+                # Try multiple field names for price
+                price_value = None
+                for field_name in ["price", "value", "value_price", "last_price"]:
+                    if field_name in eur_item:
+                        price_value = self._normalize_price_value(eur_item[field_name])
+                        if price_value is not None:
+                            break
+                
+                if price_value is not None and price_value > 0:
+                    return int(price_value)
+            
             log.warning("EUR not found in BRS API response")
             return None
         except Exception as e:
@@ -183,8 +268,25 @@ class BRSAPIProvider(RateProvider):
             data = self.get_latest_raw()
             gold_list = data.get("gold", [])
             gold_item = self._find_item_by_symbol(gold_list, "IR_GOLD_18K")
-            if gold_item and "price" in gold_item:
-                return int(float(gold_item["price"]))
+            if not gold_item:
+                # Try alternative symbol names
+                for alt_symbol in ["gold18", "gold_18k", "gold18k", "IR_GOLD18K", "GOLD_18K"]:
+                    gold_item = self._find_item_by_symbol(gold_list, alt_symbol)
+                    if gold_item:
+                        break
+            
+            if gold_item:
+                # Try multiple field names for price
+                price_value = None
+                for field_name in ["price", "value", "value_price", "last_price"]:
+                    if field_name in gold_item:
+                        price_value = self._normalize_price_value(gold_item[field_name])
+                        if price_value is not None:
+                            break
+                
+                if price_value is not None and price_value > 0:
+                    return int(price_value)
+            
             log.warning("IR_GOLD_18K not found in BRS API response")
             return None
         except Exception as e:
