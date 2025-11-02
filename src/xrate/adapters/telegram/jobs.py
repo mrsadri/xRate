@@ -21,12 +21,13 @@ Files that this module USES:
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone, time, timedelta
 import logging
 import asyncio
+from decimal import Decimal, ROUND_HALF_UP
 
-from telegram.ext import ContextTypes
-from telegram.error import RetryAfter, TimedOut
+from telegram.ext import ContextTypes  # type: ignore[import-untyped]
+from telegram.error import RetryAfter, TimedOut  # type: ignore[import-untyped]
 
 from xrate.adapters.formatting.formatter import market_lines_with_changes, market_lines
 from xrate.application.rates_service import RatesService, get_irr_snapshot
@@ -38,19 +39,26 @@ from xrate.adapters.ai.avalai import AvalaiService
 from xrate.config import settings
 
 
-def _breach(curr: float, prev: float, up_pct: float, down_pct: float) -> bool:
+# Hysteresis state: track last breach direction per instrument to prevent flip-flop
+_breach_history: dict[str, Optional[str]] = {}  # key: instrument, value: "up"/"down"/None
+
+
+def _breach(curr: float, prev: float, up_pct: float, down_pct: float, instrument: str = "") -> bool:
     """
     Check if current value has breached the threshold compared to previous value.
+    Uses Decimal for precise calculations and implements hysteresis to prevent flip-flop.
     
     Logic:
     - Increase breach: curr >= prev * (1 + up_pct/100)   [e.g., +1% threshold]
     - Decrease breach: curr <= prev * (1 - down_pct/100)  [e.g., -2% threshold]
+    - Hysteresis: After first breach, require +0.2% extra movement before posting again
     
     Args:
         curr: Current value
         prev: Previous/baseline value
         up_pct: Percentage threshold for increase (e.g., 1.0 means 1% increase triggers)
         down_pct: Percentage threshold for decrease (e.g., 2.0 means 2% decrease triggers)
+        instrument: Optional instrument name for hysteresis tracking (e.g., "usd", "eur")
         
     Returns:
         True if threshold is breached (increase >= up_pct OR decrease >= down_pct), False otherwise
@@ -59,13 +67,50 @@ def _breach(curr: float, prev: float, up_pct: float, down_pct: float) -> bool:
     if prev <= 0:
         return True  # no baseline → always announce
     
-    # Calculate thresholds
-    upper_bound = prev * (1.0 + up_pct / 100.0)    # If price goes above this, breach
-    lower_bound = prev * (1.0 - down_pct / 100.0)  # If price goes below this, breach
+    # Use Decimal for precise floating-point calculations
+    curr_decimal = Decimal(str(curr)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+    prev_decimal = Decimal(str(prev)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+    up_pct_decimal = Decimal(str(up_pct)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    down_pct_decimal = Decimal(str(down_pct)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
     
-    # Check both directions correctly
-    increase_breach = curr >= upper_bound   # Price rose too much
-    decrease_breach = curr <= lower_bound   # Price dropped too much
+    # Calculate thresholds with Decimal precision
+    upper_bound = prev_decimal * (Decimal('1.0') + up_pct_decimal / Decimal('100.0'))
+    lower_bound = prev_decimal * (Decimal('1.0') - down_pct_decimal / Decimal('100.0'))
+    
+    # Check basic breach conditions
+    increase_breach = curr_decimal >= upper_bound
+    decrease_breach = curr_decimal <= lower_bound
+    
+    # Apply hysteresis if we have a previous breach state for this instrument
+    if instrument and instrument in _breach_history:
+        last_direction = _breach_history[instrument]
+        if last_direction == "up" and increase_breach:
+            # After an upward breach, require +0.2% extra movement before posting again
+            hysteresis_upper = upper_bound * Decimal('1.002')  # +0.2% buffer
+            if curr_decimal < hysteresis_upper:
+                return False  # Don't breach yet, still in hysteresis zone
+        elif last_direction == "down" and decrease_breach:
+            # After a downward breach, require -0.2% extra movement before posting again
+            hysteresis_lower = lower_bound * Decimal('0.998')  # -0.2% buffer
+            if curr_decimal > hysteresis_lower:
+                return False  # Don't breach yet, still in hysteresis zone
+    
+    # Update breach history if there's a breach
+    if instrument:
+        if increase_breach:
+            _breach_history[instrument] = "up"
+        elif decrease_breach:
+            _breach_history[instrument] = "down"
+        else:
+            # No breach - reset history after significant movement away from threshold
+            # Only reset if we're well away from the threshold (e.g., >0.5% away)
+            percent_change = ((curr_decimal - prev_decimal) / prev_decimal) * Decimal('100.0')
+            if abs(percent_change) < Decimal('0.5'):
+                # Still near threshold, keep history
+                pass
+            else:
+                # Moved well away, reset
+                _breach_history[instrument] = None
     
     return increase_breach or decrease_breach
 
@@ -99,18 +144,68 @@ _post_rate_job_lock = asyncio.Lock()
 _avalai_service: Optional[AvalaiService] = None
 
 def _get_avalai_service() -> Optional[AvalaiService]:
-    """Get or create Avalai service instance."""
+    """
+    Get or create Avalai service instance for AI-powered market analysis.
+    
+    Uses lazy initialization to create the service only when needed.
+    Returns None if API key is not configured.
+    
+    Returns:
+        AvalaiService instance if configured, None otherwise
+    """
     global _avalai_service
     if _avalai_service is None:
         _avalai_service = AvalaiService()
     return _avalai_service
+
+# Per-provider next-eligible time tracking (to respect individual TTLs)
+_provider_next_eligible: dict[str, datetime] = {}
+
+
+def _should_fetch_provider(provider_name: str, cache_minutes: int) -> bool:
+    """
+    Check if a provider should be fetched based on its individual TTL.
+    
+    Tracks per-provider next-eligible time to prevent fetching providers more frequently
+    than their intended cadence, even when the job runs at the minimum TTL interval.
+    This prevents rate limiting on providers with longer cache windows.
+    
+    Args:
+        provider_name: Name of the provider (e.g., "brsapi", "fastforex", "navasan", "wallex")
+        cache_minutes: Cache TTL in minutes for this provider
+        
+    Returns:
+        True if provider should be fetched (TTL has elapsed), False if it's too soon
+        
+    Example:
+        If Navasan has 28-minute TTL but job runs every 15 minutes, this ensures
+        Navasan is only fetched once every 28 minutes, not every job cycle.
+    """
+    now = datetime.now(timezone.utc)
+    if provider_name not in _provider_next_eligible:
+        # First time, allow fetch
+        _provider_next_eligible[provider_name] = now
+        return True
+    
+    next_eligible = _provider_next_eligible[provider_name]
+    if now >= next_eligible:
+        # Update next eligible time
+        _provider_next_eligible[provider_name] = now + timedelta(minutes=cache_minutes)
+        return True
+    
+    # Too soon, skip this provider
+    logger = logging.getLogger(__name__)
+    logger.debug("Skipping %s fetch - next eligible at %s (TTL: %d min)", 
+                 provider_name, next_eligible, cache_minutes)
+    return False
+
 
 async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -> None:
     """
     Scheduled job that monitors market changes and posts updates to Telegram channel.
     
     This function:
-    1. Fetches current market data (EUR/USD rate and IRR snapshot)
+    1. Fetches current market data (EUR/USD rate and IRR snapshot) respecting per-provider TTLs
     2. Compares with last posted values using configured thresholds
     3. Posts to channel if any threshold is breached
     4. Updates state baseline after posting
@@ -131,22 +226,31 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
     
     # Acquire lock for this execution
     async with _post_rate_job_lock:
-        # Fetch current values (these now return None on failure instead of raising)
-        eurusd_rate = svc.eur_usd()
-        snap = get_irr_snapshot()
+        # Check if we should fetch EUR/USD (BRS/FastForex)
+        eurusd_rate = None
+        if _should_fetch_provider("brsapi", settings.brsapi_cache_minutes) or \
+           _should_fetch_provider("fastforex", settings.fastforex_cache_minutes):
+            eurusd_rate = svc.eur_usd()
         
-        # Fetch Tether data from Wallex API
+        # Check if we should fetch IRR snapshot (BRS/Navasan)
+        snap = None
+        if _should_fetch_provider("brsapi", settings.brsapi_cache_minutes) or \
+           _should_fetch_provider("navasan", settings.navasan_cache_minutes):
+            snap = get_irr_snapshot()
+        
+        # Fetch Tether data from Wallex API (only if TTL allows)
         tether_price_toman: Optional[int] = None
         tether_24h_ch: Optional[float] = None
-        try:
-            wallex_provider = WallexProvider()
-            tether_data = wallex_provider.get_tether_data()
-            if tether_data:
-                tether_price_toman = int(tether_data["price"])
-                tether_24h_ch = float(tether_data["24h_ch"])
-                logger.debug("Fetched Tether: price=%s, 24h_ch=%s%%", tether_price_toman, tether_24h_ch)
-        except Exception as e:
-            logger.warning("Failed to fetch Tether data from Wallex: %s", e)
+        if _should_fetch_provider("wallex", settings.wallex_cache_minutes):
+            try:
+                wallex_provider = WallexProvider()
+                tether_data = wallex_provider.get_tether_data()
+                if tether_data:
+                    tether_price_toman = int(tether_data["price"])
+                    tether_24h_ch = float(tether_data["24h_ch"])
+                    logger.debug("Fetched Tether: price=%s, 24h_ch=%s%%", tether_price_toman, tether_24h_ch)
+            except Exception as e:
+                logger.warning("Failed to fetch Tether data from Wallex: %s", e)
         
         # Check if we have at least some data
         if eurusd_rate is None and snap is None:
@@ -194,6 +298,7 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                         raise  # Re-raise to trigger outer exception handler
                     
                     # Generate and send analysis from Avalai API (first run)
+                    # This is completely non-blocking - failures here never affect the main job
                     try:
                         logger.info("Starting Avalai analysis generation for first run post")
                         avalai = _get_avalai_service()
@@ -202,22 +307,32 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                             if avalai.client:
                                 logger.info("Generating market analysis from Avalai API (first run)")
                                 first_run_text = market_lines(snap, eurusd_rate, providers=first_run_providers if first_run_providers else None)
-                                analysis = await avalai.generate_analysis(price_message=first_run_text)
-                                if analysis:
-                                    logger.info("First run analysis received (length=%d chars), sending to channel", len(analysis))
-                                    await context.bot.send_message(
-                                        chat_id=settings.channel_id,
-                                        text=analysis,
+                                # Use asyncio timeout to prevent hanging on slow API
+                                try:
+                                    analysis = await asyncio.wait_for(
+                                        avalai.generate_analysis(price_message=first_run_text),
+                                        timeout=30.0  # 30 second timeout for Avalai API
                                     )
-                                    logger.info("First run analysis sent to channel successfully")
-                                else:
-                                    logger.warning("First run: No analysis generated from Avalai API (returned None)")
+                                    if analysis:
+                                        logger.info("First run analysis received (length=%d chars), sending to channel", len(analysis))
+                                        await context.bot.send_message(
+                                            chat_id=settings.channel_id,
+                                            text=analysis,
+                                        )
+                                        logger.info("First run analysis sent to channel successfully")
+                                    else:
+                                        logger.warning("First run: No analysis generated from Avalai API (returned None)")
+                                except asyncio.TimeoutError:
+                                    logger.warning("First run: Avalai API call timed out after 30 seconds - analysis skipped")
+                                except Exception as avalai_error:
+                                    logger.warning("First run: Avalai API call failed (non-blocking): %s", avalai_error, exc_info=True)
                             else:
                                 logger.warning("First run: Avalai client not initialized")
                         else:
                             logger.warning("First run: Avalai service not available")
                     except Exception as e:
-                        logger.exception("Failed to generate or send analysis (first run): %s", e)
+                        # Catch-all for any unexpected errors - never fail the main job
+                        logger.warning("First run: Unexpected error in Avalai analysis (non-blocking): %s", e, exc_info=True)
                     
                     # Track the post
                     stats_tracker.record_post(providers=first_run_providers, is_manual=False)
@@ -249,20 +364,24 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                 trigger_usd = _breach(
                     snap.usd_toman, current_state.usd_toman,
                         settings.margin_usd_upper_pct, settings.margin_usd_lower_pct,
+                        instrument="usd",
                 ) if current_state.usd_toman > 0 else True
                 trigger_eur = _breach(
                     snap.eur_toman, current_state.eur_toman,
                         settings.margin_eur_upper_pct, settings.margin_eur_lower_pct,
+                        instrument="eur",
                 ) if current_state.eur_toman > 0 else True
                 trigger_gold = _breach(
                     snap.gold_1g_toman, current_state.gold_1g_toman,
                         settings.margin_gold_upper_pct, settings.margin_gold_lower_pct,
+                        instrument="gold",
                 ) if current_state.gold_1g_toman > 0 else True
             
             if eurusd_rate is not None:
                 trigger_fx = _breach(
                     eurusd_rate, current_state.eurusd_rate,
                         settings.margin_eurusd_upper_pct, settings.margin_eurusd_lower_pct,
+                        instrument="eurusd",
                 ) if current_state.eurusd_rate > 0 else True
 
             # Check Tether 24h_ch threshold
@@ -288,29 +407,52 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                 eurusd_provider = svc.get_eur_usd_provider()
                 if eurusd_provider and eurusd_provider not in used_providers:
                     used_providers.append(eurusd_provider)
-            # Add wallex if Tether data was used (even if threshold not breached, it was fetched)
-            if tether_price_toman is not None:
+            # Add wallex if Tether data was successfully fetched and used
+            # Only add if we actually have data (not if fetch failed)
+            if tether_price_toman is not None and tether_24h_ch is not None:
                 if "wallex" not in used_providers:
                     used_providers.append("wallex")
 
             # Build the message with % changes & elapsed time - only show items that breached thresholds
-            text = market_lines_with_changes(
-                curr=snap,
-                curr_eur_usd=eurusd_rate,
-                prev_usd_toman=current_state.usd_toman if snap else None,
-                prev_eur_toman=current_state.eur_toman if snap else None,
-                prev_gold_1g_toman=current_state.gold_1g_toman if snap else None,
-                prev_eur_usd=current_state.eurusd_rate if eurusd_rate is not None else None,
-                elapsed_seconds=elapsed_seconds,
-                show_usd=trigger_usd,
-                show_eur=trigger_eur,
-                show_gold=trigger_gold,
-                show_eurusd=trigger_fx,
-                tether_price_toman=tether_price_toman,
-                tether_24h_ch=tether_24h_ch,
-                show_tether=trigger_tether,
-                providers=used_providers if used_providers else None,
-            )
+            # Note: Tether data is optional - if unavailable, omit it from the message
+            try:
+                text = market_lines_with_changes(
+                    curr=snap,
+                    curr_eur_usd=eurusd_rate,
+                    prev_usd_toman=current_state.usd_toman if snap else None,
+                    prev_eur_toman=current_state.eur_toman if snap else None,
+                    prev_gold_1g_toman=current_state.gold_1g_toman if snap else None,
+                    prev_eur_usd=current_state.eurusd_rate if eurusd_rate is not None else None,
+                    elapsed_seconds=elapsed_seconds,
+                    show_usd=trigger_usd,
+                    show_eur=trigger_eur,
+                    show_gold=trigger_gold,
+                    show_eurusd=trigger_fx,
+                    tether_price_toman=tether_price_toman,
+                    tether_24h_ch=tether_24h_ch,
+                    show_tether=trigger_tether and tether_price_toman is not None and tether_24h_ch is not None,
+                    providers=used_providers if used_providers else None,
+                )
+            except Exception as format_error:
+                # If formatting fails (e.g., due to missing Tether data), log and continue without it
+                logger.warning("Failed to format message with Tether data, retrying without: %s", format_error)
+                text = market_lines_with_changes(
+                    curr=snap,
+                    curr_eur_usd=eurusd_rate,
+                    prev_usd_toman=current_state.usd_toman if snap else None,
+                    prev_eur_toman=current_state.eur_toman if snap else None,
+                    prev_gold_1g_toman=current_state.gold_1g_toman if snap else None,
+                    prev_eur_usd=current_state.eurusd_rate if eurusd_rate is not None else None,
+                    elapsed_seconds=elapsed_seconds,
+                    show_usd=trigger_usd,
+                    show_eur=trigger_eur,
+                    show_gold=trigger_gold,
+                    show_eurusd=trigger_fx,
+                    tether_price_toman=None,  # Skip Tether if formatting failed
+                    tether_24h_ch=None,
+                    show_tether=False,
+                    providers=used_providers if used_providers else None,
+                )
 
             try:
                 if (trigger_usd or trigger_eur or trigger_gold or trigger_fx or trigger_tether):
@@ -335,6 +477,8 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                         raise  # Re-raise to trigger outer exception handler
                     
                     # Generate and send analysis from Avalai API
+                    # This is completely non-blocking - failures here never affect the main job
+                    # The price post above is already successful at this point
                     try:
                         logger.info("Starting Avalai analysis generation for scheduled post")
                         avalai = _get_avalai_service()
@@ -342,24 +486,35 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                             logger.info("Avalai service obtained, checking client availability")
                             if avalai.client:
                                 logger.info("Generating market analysis from Avalai API (scheduled post)")
-                                analysis = await avalai.generate_analysis(price_message=text)
-                                if analysis:
-                                    logger.info("Analysis received, sending to channel (length=%d chars)", len(analysis))
-                                    # Send analysis as a separate message to the channel
-                                    await context.bot.send_message(
-                                        chat_id=settings.channel_id,
-                                        text=analysis,
+                                # Use asyncio timeout to prevent hanging on slow API
+                                try:
+                                    analysis = await asyncio.wait_for(
+                                        avalai.generate_analysis(price_message=text),
+                                        timeout=30.0  # 30 second timeout for Avalai API
                                     )
-                                    logger.info("Avalai analysis sent to channel successfully")
-                                else:
-                                    logger.warning("No analysis generated from Avalai API (returned None)")
+                                    if analysis:
+                                        logger.info("Analysis received, sending to channel (length=%d chars)", len(analysis))
+                                        # Send analysis as a separate message to the channel
+                                        await context.bot.send_message(
+                                            chat_id=settings.channel_id,
+                                            text=analysis,
+                                        )
+                                        logger.info("Avalai analysis sent to channel successfully")
+                                    else:
+                                        logger.warning("No analysis generated from Avalai API (returned None)")
+                                except asyncio.TimeoutError:
+                                    logger.warning("Avalai API call timed out after 30 seconds - analysis skipped")
+                                except Exception as avalai_error:
+                                    logger.warning("Avalai API call failed (non-blocking): %s", avalai_error, exc_info=True)
                             else:
                                 logger.warning("Avalai client not initialized - API key may be missing or invalid")
                         else:
                             logger.warning("Avalai service not available (service creation failed or API key not configured)")
                     except Exception as e:
-                        logger.exception("Failed to generate or send Avalai analysis in scheduled post: %s", e)
-                        # Don't fail the main job if analysis fails
+                        # Catch-all for any unexpected errors in Avalai integration
+                        # Never let this affect the main job - price post was already successful
+                        logger.warning("Unexpected error in Avalai analysis (non-blocking): %s", e, exc_info=True)
+                        # Job continues normally - analysis is optional
                     
                     # Track the post
                     stats_tracker.record_post(providers=used_providers, is_manual=False)
@@ -469,13 +624,17 @@ async def startup_notification(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Send daily summary report to admin at 9 PM.
+    Send daily summary report to admin at scheduled time (9 PM UTC by default).
     
-    Provides a brief summary of the last 24 hours:
-    - Posts sent
-    - Errors encountered
-    - Provider usage
-    - Manual posts
+    Collects statistics from the last 24 hours and sends a formatted report to the admin user.
+    Includes post counts (manual vs automatic), error counts, provider usage statistics,
+    and overall activity metrics. Uses timezone-aware scheduling to handle DST transitions.
+    
+    The report is sent only if an admin user ID is available. If not available, the job
+    silently skips execution.
+    
+    Args:
+        context: Telegram bot context with access to bot API
     """
     logger = logging.getLogger(__name__)
     

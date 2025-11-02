@@ -177,10 +177,15 @@ def main() -> None:
         name="eur_usd_poster",
     )
     
-    # Daily summary job at 9 PM (21:00) UTC
+    # Daily summary job at 9 PM (21:00) local time (timezone-aware)
+    # Use UTC timezone for consistency (or configure via settings if needed)
+    from zoneinfo import ZoneInfo
+    # Default to UTC, but can be configured to use local timezone (e.g., Europe/Berlin)
+    daily_summary_tz = ZoneInfo("UTC")  # Can be made configurable via settings
+    daily_summary_time = time(21, 0, 0, tzinfo=daily_summary_tz)
     app.job_queue.run_daily(
         callback=daily_summary_job,
-        time=time(21, 0, 0),  # 9 PM UTC
+        time=daily_summary_time,  # 9 PM timezone-aware
         name="daily_summary",
     )
     
