@@ -88,7 +88,11 @@ class HealthChecker:
             )
     
     def check_avalai_wallet(self) -> HealthStatus:
-        """Check Avalai wallet credit."""
+        """
+        Check Avalai wallet credit.
+        
+        Uses the Avalai API to get remaining credit in Iranian Toman (remaining_irt).
+        """
         try:
             if not settings.avalai_key:
                 return HealthStatus(
@@ -108,14 +112,37 @@ class HealthChecker:
             response.raise_for_status()
             data = response.json()
             
-            credit = data.get("credit", 0) if isinstance(data, dict) else data
-            
-            return HealthStatus(
-                is_healthy=True,
-                message=f"Avalai wallet credit: {credit}",
-                last_check=datetime.now(timezone.utc),
-                details={"credit": credit, "raw_response": data}
-            )
+            # Extract remaining_irt (remaining credit in Iranian Toman)
+            if isinstance(data, dict):
+                remaining_irt = data.get("remaining_irt", 0)
+                # Format as integer (remove decimals if any)
+                credit_toman = int(float(remaining_irt))
+                
+                # Format credit nicely for display
+                if credit_toman >= 1_000_000:
+                    credit_display = f"{credit_toman / 1_000_000:.2f}M تومان"
+                elif credit_toman >= 1_000:
+                    credit_display = f"{credit_toman / 1_000:.2f}K تومان"
+                else:
+                    credit_display = f"{credit_toman} تومان"
+                
+                return HealthStatus(
+                    is_healthy=True,
+                    message=f"Avalai wallet: {credit_display} ({credit_toman:,} تومان)",
+                    last_check=datetime.now(timezone.utc),
+                    details={
+                        "remaining_irt": credit_toman,
+                        "credit_display": credit_display,
+                        "raw_response": data
+                    }
+                )
+            else:
+                return HealthStatus(
+                    is_healthy=False,
+                    message="Avalai API returned invalid response format",
+                    last_check=datetime.now(timezone.utc),
+                    details={"raw_response": data}
+                )
         except Exception as e:
             logger.error("Avalai wallet check failed: %s", e)
             return HealthStatus(
@@ -259,7 +286,7 @@ class HealthChecker:
                     details={
                         "response": response,
                         "response_length": len(response),
-                        "test_message": "آیا همه چیز اوکیه؟"
+                        "test_message": "در یک کلمه بگو آیا همه چیز اوکیه؟"
                     }
                 )
             else:

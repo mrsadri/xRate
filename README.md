@@ -34,6 +34,7 @@ git clone https://github.com/mrsadri/xRate.git
 cd xrate
 python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install --upgrade pip setuptools wheel
 pip install -e .
 cp .env.example .env  # Edit with your API keys
 python -m xrate

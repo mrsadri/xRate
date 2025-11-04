@@ -126,7 +126,7 @@ class AvalaiService:
             log.debug("Avalai API not configured, skipping API test")
             return (False, "API key not configured")
         
-        test_message = "آیا همه چیز اوکیه؟"
+        test_message = "در یک کلمه بگو آیا همه چیز اوکیه؟"
         
         try:
             log.info("Testing Avalai API with health check message: '%s'", test_message)

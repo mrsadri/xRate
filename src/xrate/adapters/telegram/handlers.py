@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio  # For async operations and timeout handling
 from functools import partial
 from datetime import datetime, timezone
 from typing import Optional
@@ -36,6 +37,7 @@ from xrate.application.rates_service import get_irr_snapshot
 from xrate.adapters.formatting.formatter import (
     format_persian_market_update,
     format_persian_daily_report,
+    format_persian_admin_post,
     format_irr_snapshot,
 )
 
@@ -58,6 +60,23 @@ logger = logging.getLogger(__name__)
 
 
 # --- /health: System health check (admin only) ---
+def _escape_markdown(text: str) -> str:
+    """
+    Escape special Markdown characters for Telegram Markdown parsing.
+    
+    Args:
+        text: Text to escape
+        
+    Returns:
+        Escaped text safe for Markdown parsing
+    """
+    # Escape special Markdown characters: _ * [ ] ( ) ` ~
+    special_chars = ['_', '*', '[', ']', '(', ')', '`', '~']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle /health command - check and report system health status (admin only).
@@ -96,19 +115,27 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             check_emoji = "✅" if check_data["healthy"] else "❌"
             # Format check name for display
             display_name = check_name.replace('_', ' ').title()
+            # Escape the message content to prevent Markdown parsing errors
+            check_message = _escape_markdown(str(check_data['message']))
+            
             # Special formatting for Avalai wallet to show credit prominently
             if check_name == "avalai_wallet" and check_data.get("details", {}).get("credit") is not None:
                 credit = check_data["details"]["credit"]
-                message += f"{check_emoji} **{display_name}**: 💰 {credit}\n"
+                # Escape credit value if it's a string
+                credit_str = _escape_markdown(str(credit)) if isinstance(credit, str) else str(credit)
+                message += f"{check_emoji} **{display_name}**: 💰 {credit_str}\n"
             else:
-                message += f"{check_emoji} **{display_name}**: {check_data['message']}\n"
+                message += f"{check_emoji} **{display_name}**: {check_message}\n"
         
-        message += f"\n🕐 Checked at: {health_status['timestamp']}"
+        # Escape timestamp
+        timestamp = _escape_markdown(health_status['timestamp'])
+        message += f"\n🕐 Checked at: {timestamp}"
         
         await update.message.reply_text(message, parse_mode="Markdown")
     except Exception as e:
         logger.exception("Health check failed")
-        await update.message.reply_text(f"Health check failed: {e}")
+        # Don't use Markdown for error message to avoid parsing issues
+        await update.message.reply_text(f"Health check failed: {str(e)}")
 
 
 # --- /irr: Market snapshot (debug/info) ---
@@ -242,25 +269,52 @@ async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         # Get current state for comparison
         current_state = state_manager.get_current_state()
-        elapsed_seconds = state_manager.get_elapsed_seconds() if current_state else 0
         
-        # Use Persian format
+        # Use Persian admin post format (with changes, no elapsed time)
         if current_state:
-            text = format_persian_market_update(
+            text = format_persian_admin_post(
                 curr=snap,
                 prev_usd_toman=current_state.usd_toman,
                 prev_eur_toman=current_state.eur_toman,
                 prev_gold_1g_toman=current_state.gold_1g_toman,
-                elapsed_seconds=elapsed_seconds,
             )
         else:
-            text = format_persian_daily_report(snap, elapsed_seconds)
+            # No previous state, show daily report format
+            text = format_persian_daily_report(snap, 0)
+        
+        # Generate Avalai analysis once (if configured) - reduces API calls
+        analysis_text = None
+        try:
+            avalai = AvalaiService()
+            if avalai and avalai.client:
+                try:
+                    analysis_text = await asyncio.wait_for(
+                        avalai.generate_analysis(price_message=text),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Avalai API call timed out - skipping analysis")
+                except Exception as e:
+                    logger.warning("Avalai analysis failed (non-blocking): %s", e)
+        except Exception as e:
+            logger.debug("Avalai service not available: %s", e)
         
         # Post to main channel
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
             text=text,
         )
+        
+        # Post Avalai analysis to main channel if available
+        if analysis_text:
+            try:
+                await context.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=analysis_text,
+                )
+                logger.info("Posted Avalai analysis to main channel")
+            except Exception as e:
+                logger.warning("Failed to post Avalai analysis to main channel: %s", e)
         
         # Update state
         from datetime import datetime, timezone
@@ -317,25 +371,52 @@ async def posttest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         # Get current state for comparison
         current_state = state_manager.get_current_state()
-        elapsed_seconds = state_manager.get_elapsed_seconds() if current_state else 0
         
-        # Use Persian format
+        # Use Persian admin post format (with changes, no elapsed time)
         if current_state:
-            text = format_persian_market_update(
+            text = format_persian_admin_post(
                 curr=snap,
                 prev_usd_toman=current_state.usd_toman,
                 prev_eur_toman=current_state.eur_toman,
                 prev_gold_1g_toman=current_state.gold_1g_toman,
-                elapsed_seconds=elapsed_seconds,
             )
         else:
-            text = format_persian_daily_report(snap, elapsed_seconds)
+            # No previous state, show daily report format
+            text = format_persian_daily_report(snap, 0)
+        
+        # Generate Avalai analysis once (if configured) - reduces API calls
+        analysis_text = None
+        try:
+            avalai = AvalaiService()
+            if avalai and avalai.client:
+                try:
+                    analysis_text = await asyncio.wait_for(
+                        avalai.generate_analysis(price_message=text),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Avalai API call timed out - skipping analysis")
+                except Exception as e:
+                    logger.warning("Avalai analysis failed (non-blocking): %s", e)
+        except Exception as e:
+            logger.debug("Avalai service not available: %s", e)
         
         # Post to test channel
         await context.bot.send_message(
             chat_id=test_channel_id,
             text=text,
         )
+        
+        # Post Avalai analysis to test channel if available
+        if analysis_text:
+            try:
+                await context.bot.send_message(
+                    chat_id=test_channel_id,
+                    text=analysis_text,
+                )
+                logger.info("Posted Avalai analysis to test channel")
+            except Exception as e:
+                logger.warning("Failed to post Avalai analysis to test channel: %s", e)
         
         await update.message.reply_text("✅ پیام با موفقیت به کانال تست ارسال شد.")
         logger.info("Manual post to test channel by admin")

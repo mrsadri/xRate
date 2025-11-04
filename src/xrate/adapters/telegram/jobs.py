@@ -671,8 +671,15 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         avalai_wallet_status = health_checker.check_avalai_wallet()
         avalai_wallet_text = ""
         if avalai_wallet_status.is_healthy and avalai_wallet_status.details:
-            wallet_credit = avalai_wallet_status.details.get("credit", "Unknown")
-            avalai_wallet_text = f"\n\n💰 **Avalai Wallet**: {wallet_credit}"
+            # Use remaining_irt (remaining credit in Iranian Toman)
+            remaining_irt = avalai_wallet_status.details.get("remaining_irt", 0)
+            if remaining_irt:
+                # Format with Persian number formatting
+                from xrate.adapters.formatting.formatter import format_persian_number
+                credit_formatted = format_persian_number(int(remaining_irt)) + " تومان"
+                avalai_wallet_text = f"\n\n💰 **Avalai Wallet**: {credit_formatted}"
+            else:
+                avalai_wallet_text = f"\n\n💰 **Avalai Wallet**: {avalai_wallet_status.message}"
         elif not avalai_wallet_status.is_healthy:
             avalai_wallet_text = f"\n\n💰 **Avalai Wallet**: {avalai_wallet_status.message}"
         
