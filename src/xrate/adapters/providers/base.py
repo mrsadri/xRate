@@ -6,8 +6,8 @@ This module defines the abstract base class for all exchange rate providers.
 It establishes the contract that all provider implementations must follow.
 
 Files that USE this module:
-- xrate.adapters.providers.fastforex (FastForexProvider implements RateProvider)
-- xrate.adapters.providers.navasan (NavasanProvider - indirectly)
+- xrate.adapters.providers.navasan (NavasanProvider implements RateProvider)
+- xrate.adapters.providers.wallex (WallexProvider implements RateProvider)
 - xrate.application.rates_service (uses RateProvider protocol)
 - tests.test_providers (unit tests)
 

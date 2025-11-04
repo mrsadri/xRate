@@ -3,8 +3,8 @@
 Health Checker - System Monitoring and Diagnostics
 
 This module provides comprehensive health monitoring for all bot components.
-It checks the status of APIs (BRS, FastForex, Navasan, Wallex), state manager, and data
-fetching operations to ensure the bot is operating correctly and identify issues.
+It checks the status of crawlers (Bonbast, AlanChand), APIs (Navasan, Wallex), Avalai wallet,
+state manager, and data fetching operations to ensure the bot is operating correctly and identify issues.
 """
 
 from __future__ import annotations
@@ -15,12 +15,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from xrate.application.state_manager import state_manager
-from xrate.adapters.providers.brsapi import BRSAPIProvider
-from xrate.adapters.providers.fastforex import FastForexProvider
 from xrate.adapters.providers.navasan import NavasanProvider
 from xrate.adapters.providers.wallex import WallexProvider
 from xrate.adapters.ai.avalai import AvalaiService
 from xrate.application.rates_service import get_irr_snapshot
+from xrate.application.crawler_service import get_crawler_usage_times  # Get crawler usage times
+from xrate.config import settings
+import requests  # type: ignore[import-untyped]  # HTTP library for Avalai wallet check
 
 logger = logging.getLogger(__name__)
 
@@ -38,57 +39,88 @@ class HealthChecker:
     """Centralized health checking for all bot components."""
     
     def __init__(self):
-        self.brsapi_provider = BRSAPIProvider()
-        self.fastforex_provider = FastForexProvider()
         self.navasan_provider = NavasanProvider()
         self.wallex_provider = WallexProvider()
         self.avalai_service = AvalaiService()
     
-    def check_brsapi_api(self) -> HealthStatus:
-        """Check BRS API health."""
+    def check_crawlers(self) -> HealthStatus:
+        """Check crawler health status."""
         try:
-            usd = self.brsapi_provider.get_usd_toman()
-            eur = self.brsapi_provider.get_eur_toman()
-            gold = self.brsapi_provider.get_gold_18k_toman()
-            eurusd = self.brsapi_provider.eur_usd_rate()
+            from xrate.application.crawler_service import get_crawler_snapshot
+            crawler1_time, crawler2_time = get_crawler_usage_times()
             
-            if usd and eur and gold:
+            # Try to get a snapshot
+            snap = get_crawler_snapshot()
+            
+            crawler1_status = "Last used: " + (crawler1_time.strftime("%Y-%m-%d %H:%M:%S UTC") if crawler1_time else "Never")
+            crawler2_status = "Last used: " + (crawler2_time.strftime("%Y-%m-%d %H:%M:%S UTC") if crawler2_time else "Never")
+            
+            if snap:
                 return HealthStatus(
                     is_healthy=True,
-                    message=f"BRS API healthy, USD={usd}, EUR={eur}, Gold={gold}, EUR/USD={eurusd:.4f}",
+                    message=f"Crawlers healthy. Provider: {snap.provider}. Crawler1: {crawler1_status}, Crawler2: {crawler2_status}",
                     last_check=datetime.now(timezone.utc),
-                    details={"usd": usd, "eur": eur, "gold": gold, "eurusd": eurusd}
+                    details={
+                        "provider": snap.provider,
+                        "crawler1_last_used": crawler1_time.isoformat() if crawler1_time else None,
+                        "crawler2_last_used": crawler2_time.isoformat() if crawler2_time else None,
+                        "usd": snap.usd_toman,
+                        "eur": snap.eur_toman,
+                        "gold": snap.gold_1g_toman,
+                    }
                 )
             else:
                 return HealthStatus(
                     is_healthy=False,
-                    message="BRS API returned incomplete data",
+                    message=f"Crawlers unavailable. Crawler1: {crawler1_status}, Crawler2: {crawler2_status}",
                     last_check=datetime.now(timezone.utc),
-                    details={"usd": usd, "eur": eur, "gold": gold}
+                    details={
+                        "crawler1_last_used": crawler1_time.isoformat() if crawler1_time else None,
+                        "crawler2_last_used": crawler2_time.isoformat() if crawler2_time else None,
+                    }
                 )
         except Exception as e:
-            logger.error("BRS API health check failed: %s", e)
+            logger.error("Crawler health check failed: %s", e)
             return HealthStatus(
                 is_healthy=False,
-                message=f"BRS API error: {str(e)}",
+                message=f"Crawler error: {str(e)}",
                 last_check=datetime.now(timezone.utc)
             )
     
-    def check_fastforex_api(self) -> HealthStatus:
-        """Check FastForex API health."""
+    def check_avalai_wallet(self) -> HealthStatus:
+        """Check Avalai wallet credit."""
         try:
-            rate = self.fastforex_provider.eur_usd_rate()
+            if not settings.avalai_key:
+                return HealthStatus(
+                    is_healthy=False,
+                    message="Avalai API key not configured",
+                    last_check=datetime.now(timezone.utc),
+                    details={"configured": False}
+                )
+            
+            url = "https://api.avalai.ir/user/credit"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {settings.avalai_key}"
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            credit = data.get("credit", 0) if isinstance(data, dict) else data
+            
             return HealthStatus(
                 is_healthy=True,
-                message=f"FastForex API healthy, rate: {rate:.4f}",
+                message=f"Avalai wallet credit: {credit}",
                 last_check=datetime.now(timezone.utc),
-                details={"rate": rate}
+                details={"credit": credit, "raw_response": data}
             )
         except Exception as e:
-            logger.error("FastForex health check failed: %s", e)
+            logger.error("Avalai wallet check failed: %s", e)
             return HealthStatus(
                 is_healthy=False,
-                message=f"FastForex API error: {str(e)}",
+                message=f"Avalai wallet error: {str(e)}",
                 last_check=datetime.now(timezone.utc)
             )
     
@@ -254,11 +286,11 @@ class HealthChecker:
         Returns degraded status if any critical component fails, even if others are healthy.
         """
         checks = {
-            "brsapi": self.check_brsapi_api(),
-            "fastforex": self.check_fastforex_api(),
+            "crawlers": self.check_crawlers(),
             "navasan": self.check_navasan_api(),
             "wallex": self.check_wallex_api(),
             "avalai": self.check_avalai_api(),
+            "avalai_wallet": self.check_avalai_wallet(),
             "state_manager": self.check_state_manager(),
             "irr_data": self.check_irr_data_fetch(),
         }

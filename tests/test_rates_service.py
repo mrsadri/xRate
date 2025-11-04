@@ -91,11 +91,7 @@ class TestGetIrrSnapshot:
         assert result.gold_1g_toman == 10812360
 
     @patch('xrate.application.rates_service.NavasanProvider')
-    @patch('xrate.application.rates_service.BRSAPIProvider')
-    def test_get_irr_snapshot_with_missing_values(self, mock_brs_class, mock_navasan_class):
-        # Mock BRS to fail
-        mock_brs_class.side_effect = Exception("BRS failed")
-        
+    def test_get_irr_snapshot_with_missing_values(self, mock_navasan_class):
         # Mock the provider instance
         mock_provider = Mock()
         mock_provider.get_values.return_value = {
@@ -111,10 +107,8 @@ class TestGetIrrSnapshot:
         assert result is None
 
     @patch('xrate.application.rates_service.NavasanProvider')
-    @patch('xrate.application.rates_service.BRSAPIProvider')
-    def test_get_irr_snapshot_with_exception(self, mock_brs_class, mock_navasan_class):
-        # Mock both providers to raise exceptions
-        mock_brs_class.side_effect = Exception("BRS Error")
+    def test_get_irr_snapshot_with_exception(self, mock_navasan_class):
+        # Mock provider to raise exception
         mock_navasan_class.side_effect = Exception("Navasan Error")
         
         # Should return None when all providers fail (exception is caught)

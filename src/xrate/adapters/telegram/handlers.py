@@ -10,7 +10,7 @@ Files that USE this module:
 - xrate.app (build_handlers function creates handler instances)
 
 Files that this module USES:
-- xrate.application.rates_service (RatesService, get_irr_snapshot)
+- xrate.application.rates_service (get_irr_snapshot)
 - xrate.adapters.formatting.formatter (all formatter functions)
 - xrate.application.state_manager (state_manager for baseline data)
 - xrate.shared.rate_limiter (rate limiting functionality)
@@ -32,11 +32,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError, RetryAfter, TimedOut
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
-from xrate.application.rates_service import RatesService, get_irr_snapshot
+from xrate.application.rates_service import get_irr_snapshot
 from xrate.adapters.formatting.formatter import (
-    market_lines,
+    format_persian_market_update,
+    format_persian_daily_report,
     format_irr_snapshot,
-    market_lines_with_changes,
 )
 
 # Import in-memory baseline maintained by the scheduled job
@@ -57,33 +57,22 @@ ADMIN_USERNAME = settings.admin_username
 logger = logging.getLogger(__name__)
 
 
-def _get_baseline():
-    """
-    Get the baseline market state for comparison.
-    
-    Returns:
-        Tuple of (usd_toman, eur_toman, gold_1g_toman, eurusd_rate, timestamp) 
-        or None if no baseline exists
-    """
-    current_state = state_manager.get_current_state()
-    if current_state:
-        return (current_state.usd_toman, current_state.eur_toman, 
-                current_state.gold_1g_toman, current_state.eurusd_rate, current_state.ts)
-    return None
-
-
-# --- /health: System health check ---
+# --- /health: System health check (admin only) ---
 async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle /health command - check and report system health status.
+    Handle /health command - check and report system health status (admin only).
     
-    Checks all components (BRS API, FastForex, Navasan, state manager, data fetch)
+    Checks all components (crawlers, Navasan, Wallex, Avalai wallet, state manager, data fetch)
     and returns a formatted health report.
     """
-    # Store admin user ID if this is the admin
-    if _is_admin(update):
-        user_id = update.effective_user.id
-        admin_store.set_admin_user_id(user_id)
+    # Admin-only: check if user is admin
+    if not _is_admin(update):
+        await update.message.reply_text("⚠️ این دستور فقط برای ادمین در دسترس است.")
+        return
+    
+    # Store admin user ID
+    user_id = update.effective_user.id
+    admin_store.set_admin_user_id(user_id)
     
     # Check rate limit
     if not _check_rate_limit(update, "health_check"):
@@ -102,13 +91,21 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         message = f"{status_emoji} **System Health Check**\n\n{status_text}\n\n"
         
+        # Display checks with special formatting for Avalai wallet
         for check_name, check_data in health_status["checks"].items():
             check_emoji = "✅" if check_data["healthy"] else "❌"
-            message += f"{check_emoji} **{check_name.replace('_', ' ').title()}**: {check_data['message']}\n"
+            # Format check name for display
+            display_name = check_name.replace('_', ' ').title()
+            # Special formatting for Avalai wallet to show credit prominently
+            if check_name == "avalai_wallet" and check_data.get("details", {}).get("credit") is not None:
+                credit = check_data["details"]["credit"]
+                message += f"{check_emoji} **{display_name}**: 💰 {credit}\n"
+            else:
+                message += f"{check_emoji} **{display_name}**: {check_data['message']}\n"
         
         message += f"\n🕐 Checked at: {health_status['timestamp']}"
         
-        await update.message.reply_text(message)
+        await update.message.reply_text(message, parse_mode="Markdown")
     except Exception as e:
         logger.exception("Health check failed")
         await update.message.reply_text(f"Health check failed: {e}")
@@ -117,91 +114,35 @@ async def health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # --- /irr: Market snapshot (debug/info) ---
 async def irr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle /irr command - display current Iranian market snapshot.
+    Handle /irr command - display current Iranian market snapshot (admin only).
     
-    Shows USD, EUR, and 18K gold prices in Toman from BRS API or Navasan fallback.
+    Shows USD, EUR, and 18K gold prices in Toman from crawlers or Navasan fallback.
     """
+    # Admin-only: check if user is admin
+    if not _is_admin(update):
+        await update.message.reply_text("⚠️ این دستور فقط برای ادمین در دسترس است.")
+        return
+    
     # Store admin user ID if this is the admin
-    if _is_admin(update):
-        user_id = update.effective_user.id
-        admin_store.set_admin_user_id(user_id)
+    user_id = update.effective_user.id
+    admin_store.set_admin_user_id(user_id)
     
     # Check rate limit
-    if not _check_rate_limit(update, "user_command"):
+    if not _check_rate_limit(update, "admin_command"):
         await update.message.reply_text("⏰ Rate limit exceeded. Please try again later.")
         return
     
     try:
         snap = get_irr_snapshot()
         if snap is None:
-            await update.message.reply_text("⚠️ Market data is currently unavailable.")
+            await update.message.reply_text("⚠️ داده‌های بازار در حال حاضر در دسترس نیست.")
             return
-        text = format_irr_snapshot("IRR Market Snapshot (BRS/Navasan)", snap)
+        elapsed_seconds = state_manager.get_elapsed_seconds()
+        text = format_persian_daily_report(snap, elapsed_seconds)
         await update.message.reply_text(text)
     except Exception as e:
         logger.exception("Failed to fetch market data")
-        await update.message.reply_text(f"Failed to fetch market data: {e}")
-
-
-# --- /start: 4-line market message (with deltas if baseline exists) ---
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -> None:
-    """
-    Handle /start command - display market data message.
-    
-    Shows current market rates with percentage changes if baseline exists.
-    Formats: USD, EUR, Gold prices, and EUR/USD rate.
-    """
-    # Store admin user ID if this is the admin
-    if _is_admin(update):
-        user_id = update.effective_user.id
-        admin_store.set_admin_user_id(user_id)
-    
-    # Check rate limit
-    if not _check_rate_limit(update, "user_command"):
-        await update.message.reply_text("⏰ Rate limit exceeded. Please try again later.")
-        return
-    
-    try:
-        rate = svc.eur_usd()
-        snap = get_irr_snapshot()
-        
-        # Check if we have at least some data
-        if rate is None and snap is None:
-            await update.message.reply_text(
-                "⚠️ All data sources are currently unavailable. Please try again later."
-            )
-            return
-        
-        # Collect providers
-        used_providers = []
-        if snap and snap.provider:
-            used_providers.append(snap.provider)
-        if rate is not None:
-            eurusd_provider = svc.get_eur_usd_provider()
-            if eurusd_provider and eurusd_provider not in used_providers:
-                used_providers.append(eurusd_provider)
-        
-        baseline = _get_baseline()
-        if baseline:
-            prev_usd, prev_eur, prev_gold, prev_fx, prev_ts = baseline
-            elapsed_seconds = int((datetime.now(timezone.utc) - prev_ts).total_seconds())
-            text = market_lines_with_changes(
-                curr=snap,
-                curr_eur_usd=rate,
-                prev_usd_toman=prev_usd if snap else None,
-                prev_eur_toman=prev_eur if snap else None,
-                prev_gold_1g_toman=prev_gold if snap else None,
-                prev_eur_usd=prev_fx if rate is not None else None,
-                elapsed_seconds=elapsed_seconds,
-                providers=used_providers if used_providers else None,
-            )
-        else:
-            text = market_lines(snap, rate, providers=used_providers if used_providers else None)
-
-        await update.message.reply_text(text)
-    except Exception:
-        logger.exception("start_cmd failed")
-        await update.message.reply_text("Sorry, I couldn't fetch market data right now.")
+        await update.message.reply_text(f"خطا در دریافت داده‌های بازار: {e}")
 
 
 def _check_rate_limit(update: Update, limit_type: str) -> bool:
@@ -267,15 +208,14 @@ def _is_admin(update: Update) -> bool:
     return uname.lower() == (ADMIN_USERNAME or "MasihSadri").lstrip("@").lower()
 
 
-async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -> None:
+async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle /post command - manually post market update to channel (admin only).
+    Handle /post command - manually post market update to main channel (admin only).
     
-    Only accessible by admin users. Fetches current market data, formats message
-    with percentage changes, posts to configured channel, and updates baseline state.
+    Only accessible by admin users. Posts to main channel (CHANNEL_ID).
     """
     if not _is_admin(update):
-        await update.message.reply_text("You're not allowed to run this command.")
+        await update.message.reply_text("⚠️ این دستور فقط برای ادمین در دسترس است.")
         return
     
     # Store admin user ID for notifications
@@ -288,192 +228,176 @@ async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, svc: Rate
         return
 
     if not CHANNEL_ID:
-        await update.message.reply_text("CHANNEL_ID is not configured.")
+        await update.message.reply_text("⚠️ CHANNEL_ID پیکربندی نشده است.")
         logger.error("CHANNEL_ID missing; cannot post to channel.")
         return
 
-    # Fetch data (these methods now return None on failure instead of raising)
-    rate = svc.eur_usd()
+    # Fetch data
     snap = get_irr_snapshot()
     
-    # Fetch Tether data from Wallex API
-    from xrate.adapters.providers.wallex import WallexProvider
-    tether_price_toman: Optional[int] = None
-    tether_24h_ch: Optional[float] = None
-    try:
-        wallex_provider = WallexProvider()
-        tether_data = wallex_provider.get_tether_data()
-        if tether_data:
-            tether_price_toman = int(tether_data["price"])
-            tether_24h_ch = float(tether_data["24h_ch"])
-    except Exception as e:
-        logger.warning("Failed to fetch Tether data from Wallex in /post: %s", e)
-    
-    # Check if we have at least some data
-    if rate is None and snap is None:
-        await update.message.reply_text(
-            "⚠️ All data sources are currently unavailable. Cannot post to channel."
-        )
+    if snap is None:
+        await update.message.reply_text("⚠️ داده‌های بازار در دسترس نیست. امکان ارسال به کانال وجود ندارد.")
         return
 
-    # Collect providers
-    used_providers = []
-    if snap and snap.provider:
-        used_providers.append(snap.provider)
-    if rate is not None:
-        eurusd_provider = svc.get_eur_usd_provider()
-        if eurusd_provider and eurusd_provider not in used_providers:
-            used_providers.append(eurusd_provider)
-    # Add wallex if Tether data was fetched
-    if tether_price_toman is not None:
-        if "wallex" not in used_providers:
-            used_providers.append("wallex")
-    
-    # Get current state for showing changes
-    current_state = state_manager.get_current_state()
-    baseline = _get_baseline()
-    
-    # For manual post (/post), always show all available items regardless of thresholds
-    # This gives admin full control to post everything when needed
-    trigger_usd = True if snap else False
-    trigger_eur = True if snap else False
-    trigger_gold = True if snap else False
-    trigger_fx = True if rate is not None else False
-    trigger_tether = True if tether_24h_ch is not None else False
-    
-    # Format the message (with changes if baseline exists)
-    if baseline and current_state:
-        prev_usd, prev_eur, prev_gold, prev_fx, prev_ts = baseline
-        elapsed_seconds = int((datetime.now(timezone.utc) - prev_ts).total_seconds())
-        text = market_lines_with_changes(
-            curr=snap,
-            curr_eur_usd=rate,
-            prev_usd_toman=prev_usd if snap else None,
-            prev_eur_toman=prev_eur if snap else None,
-            prev_gold_1g_toman=prev_gold if snap else None,
-            prev_eur_usd=prev_fx if rate is not None else None,
-            elapsed_seconds=elapsed_seconds,
-            show_usd=trigger_usd,
-            show_eur=trigger_eur,
-            show_gold=trigger_gold,
-            show_eurusd=trigger_fx,
-            tether_price_toman=tether_price_toman,
-            tether_24h_ch=tether_24h_ch,
-            show_tether=trigger_tether,
-            providers=used_providers if used_providers else None,
+    try:
+        # Get current state for comparison
+        current_state = state_manager.get_current_state()
+        elapsed_seconds = state_manager.get_elapsed_seconds() if current_state else 0
+        
+        # Use Persian format
+        if current_state:
+            text = format_persian_market_update(
+                curr=snap,
+                prev_usd_toman=current_state.usd_toman,
+                prev_eur_toman=current_state.eur_toman,
+                prev_gold_1g_toman=current_state.gold_1g_toman,
+                elapsed_seconds=elapsed_seconds,
+            )
+        else:
+            text = format_persian_daily_report(snap, elapsed_seconds)
+        
+        # Post to main channel
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=text,
         )
-    else:
-        text = market_lines(snap, rate, providers=used_providers if used_providers else None)
+        
+        # Update state
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        state_manager.update_state(
+            usd_toman=snap.usd_toman,
+            eur_toman=snap.eur_toman,
+            gold_1g_toman=snap.gold_1g_toman,
+            eurusd_rate=0.0,
+            tether_price_toman=0,
+            tether_24h_ch=0.0,
+            ts=now,
+        )
+        
+        await update.message.reply_text("✅ پیام با موفقیت به کانال اصلی ارسال شد.")
+        logger.info("Manual post to main channel by admin")
+    except Exception as e:
+        logger.error("Failed to post to main channel: %s", e, exc_info=True)
+        await update.message.reply_text(f"❌ خطا در ارسال به کانال: {str(e)}")
+
+
+async def posttest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /posttest command - manually post market update to test channel (admin only).
+    
+    Only accessible by admin users. Posts to test channel (TEST_CHANNEL_ID).
+    """
+    if not _is_admin(update):
+        await update.message.reply_text("⚠️ این دستور فقط برای ادمین در دسترس است.")
+        return
+    
+    # Store admin user ID for notifications
+    user_id = update.effective_user.id
+    admin_store.set_admin_user_id(user_id)
+
+    # Check rate limit for admin commands
+    if not _check_rate_limit(update, "admin_command"):
+        await update.message.reply_text("⏰ Rate limit exceeded. Please try again later.")
+        return
+
+    test_channel_id = settings.test_channel_id
+    if not test_channel_id:
+        await update.message.reply_text("⚠️ TEST_CHANNEL_ID پیکربندی نشده است.")
+        logger.error("TEST_CHANNEL_ID missing; cannot post to test channel.")
+        return
+
+    # Fetch data
+    snap = get_irr_snapshot()
+    
+    if snap is None:
+        await update.message.reply_text("⚠️ داده‌های بازار در دسترس نیست. امکان ارسال به کانال تست وجود ندارد.")
+        return
 
     try:
-        # Post to channel
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-        logger.info("Price message posted to channel via /post command")
-
-        # Generate and send analysis from Avalai API
-        try:
-            avalai = AvalaiService()
-            if avalai and avalai.client:
-                logger.info("Generating market analysis from Avalai API (manual /post)")
-                analysis = await avalai.generate_analysis(price_message=text)
-                if analysis:
-                    logger.info("Avalai analysis generated successfully, sending to channel")
-                    await context.bot.send_message(chat_id=CHANNEL_ID, text=analysis)
-                    logger.info("Avalai analysis sent to channel successfully")
-                else:
-                    logger.warning("Avalai API returned no analysis (None)")
-            else:
-                logger.debug("Avalai service not available - API key not configured or client not initialized")
-        except Exception as e:
-            logger.exception("Failed to generate or send Avalai analysis in /post command: %s", e)
-            # Don't fail the main post if analysis fails
-
-        # Update state using the centralized state manager (only if we have data)
-        now = datetime.now(timezone.utc)
-        if snap or rate is not None:
-            state_manager.update_state(
-                usd_toman=snap.usd_toman if snap else 0,
-                eur_toman=snap.eur_toman if snap else 0,
-                gold_1g_toman=snap.gold_1g_toman if snap else 0,
-                eurusd_rate=rate if rate is not None else 0.0,
-                tether_price_toman=tether_price_toman if tether_price_toman is not None else 0,
-                tether_24h_ch=tether_24h_ch if tether_24h_ch is not None else 0.0,
-                ts=now,
-            )
-
-        # Track the post
-        stats_tracker.record_post(providers=used_providers, is_manual=True)
+        # Get current state for comparison
+        current_state = state_manager.get_current_state()
+        elapsed_seconds = state_manager.get_elapsed_seconds() if current_state else 0
         
-        # Ack
-        await update.message.reply_text("Posted to channel ✅")
-    except Exception as e:
-        logger.exception("post_cmd failed during posting to channel")
-        stats_tracker.record_error(str(e))
-        # Show the user what was supposed to be posted
-        await update.message.reply_text(
-            f"⚠️ Failed to post to channel: {e}\n\n"
-            f"Here's what would have been posted:\n\n{text}"
+        # Use Persian format
+        if current_state:
+            text = format_persian_market_update(
+                curr=snap,
+                prev_usd_toman=current_state.usd_toman,
+                prev_eur_toman=current_state.eur_toman,
+                prev_gold_1g_toman=current_state.gold_1g_toman,
+                elapsed_seconds=elapsed_seconds,
+            )
+        else:
+            text = format_persian_daily_report(snap, elapsed_seconds)
+        
+        # Post to test channel
+        await context.bot.send_message(
+            chat_id=test_channel_id,
+            text=text,
         )
+        
+        await update.message.reply_text("✅ پیام با موفقیت به کانال تست ارسال شد.")
+        logger.info("Manual post to test channel by admin")
+    except Exception as e:
+        logger.error("Failed to post to test channel: %s", e, exc_info=True)
+        await update.message.reply_text(f"❌ خطا در ارسال به کانال تست: {str(e)}")
 
 
 # --- Fallback: reply with market message ---
-async def any_message(update: Update, context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -> None:
+async def any_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle any text message (non-command).
     
-    Displays current market data with percentage changes if baseline exists.
+    For admin: Shows market data
+    For non-admin: Stores feedback for daily report
     """
-    # Store admin user ID if this is the admin
+    user = update.effective_user
+    username = user.username or "Unknown"
+    user_id = user.id
+    
+    # If admin, show market data
     if _is_admin(update):
-        user_id = update.effective_user.id
         admin_store.set_admin_user_id(user_id)
-    
-    # Check rate limit
-    if not _check_rate_limit(update, "user_command"):
-        await update.message.reply_text("⏰ Rate limit exceeded. Please try again later.")
-        return
-    
-    try:
-        rate = svc.eur_usd()
-        snap = get_irr_snapshot()
         
-        # Check if we have at least some data
-        if rate is None and snap is None:
-            await update.message.reply_text(
-                "⚠️ All data sources are currently unavailable. Please try again later."
-            )
+        # Check rate limit
+        if not _check_rate_limit(update, "admin_command"):
+            await update.message.reply_text("⏰ Rate limit exceeded. Please try again later.")
             return
         
-        # Collect providers
-        used_providers = []
-        if snap and snap.provider:
-            used_providers.append(snap.provider)
-        if rate is not None:
-            eurusd_provider = svc.get_eur_usd_provider()
-            if eurusd_provider and eurusd_provider not in used_providers:
-                used_providers.append(eurusd_provider)
+        try:
+            snap = get_irr_snapshot()
+            if snap is None:
+                await update.message.reply_text("⚠️ داده‌های بازار در حال حاضر در دسترس نیست.")
+                return
+            
+            elapsed_seconds = state_manager.get_elapsed_seconds()
+            text = format_persian_daily_report(snap, elapsed_seconds)
+            await update.message.reply_text(text)
+        except Exception:
+            logger.exception("any_message failed for admin")
+            await update.message.reply_text("متأسفانه در حال حاضر نمی‌توانم داده‌های بازار را دریافت کنم.")
+    else:
+        # Non-admin: store feedback
+        from datetime import datetime, timezone
+        from xrate.application.stats import stats_tracker
         
-        baseline = _get_baseline()
-        if baseline:
-            prev_usd, prev_eur, prev_gold, prev_fx, prev_ts = baseline
-            elapsed_seconds = int((datetime.now(timezone.utc) - prev_ts).total_seconds())
-            text = market_lines_with_changes(
-                curr=snap,
-                curr_eur_usd=rate,
-                prev_usd_toman=prev_usd if snap else None,
-                prev_eur_toman=prev_eur if snap else None,
-                prev_gold_1g_toman=prev_gold if snap else None,
-                prev_eur_usd=prev_fx if rate is not None else None,
-                elapsed_seconds=elapsed_seconds,
-                providers=used_providers if used_providers else None,
-            )
-        else:
-            text = market_lines(snap, rate, providers=used_providers if used_providers else None)
-
-        await update.message.reply_text(text)
-    except Exception:
-        logger.exception("any_message failed")
-        await update.message.reply_text("Sorry, I couldn't fetch market data right now.")
+        message_text = update.message.text or ""
+        timestamp = datetime.now(timezone.utc)
+        
+        # Store feedback (will be included in daily report)
+        stats_tracker.record_feedback(
+            user_id=user_id,
+            username=username,
+            message=message_text,
+            timestamp=timestamp,
+        )
+        
+        await update.message.reply_text(
+            "✅ پیام شما دریافت شد و در گزارش روزانه به ادمین ارسال خواهد شد.\n\n"
+            "Thank you for your feedback! Your message will be included in the daily report to admin."
+        )
+        logger.info("Feedback stored from user %s (@%s): %s", user_id, username, message_text[:50])
 
 
 # --- /language: Language selection (admin only) ---
@@ -483,8 +407,9 @@ async def language_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     Displays inline keyboard with English and Farsi options for admin users.
     """
+    # Admin-only: check if user is admin
     if not _is_admin(update):
-        await update.message.reply_text("You're not allowed to run this command.")
+        await update.message.reply_text("⚠️ این دستور فقط برای ادمین در دسترس است.")
         return
     
     # Store admin user ID for notifications
@@ -523,7 +448,7 @@ async def language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     
     if not _is_admin(update):
-        await query.edit_message_text("You're not allowed to change language.")
+        await query.edit_message_text("⚠️ این دستور فقط برای ادمین در دسترس است.")
         return
     
     if query.data == "lang_en":
@@ -555,22 +480,19 @@ async def language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("Invalid language selection")
 
 
-def build_handlers(svc: RatesService):
+def build_handlers():
     """
     Build and return list of Telegram bot handlers.
     
-    Args:
-        svc: RatesService instance to inject into handlers
-        
     Returns:
         List of handler instances for registration with bot
     """
     return [
-        CommandHandler("start", partial(start_cmd, svc=svc)),
-        CommandHandler("irr", irr),
-        CommandHandler("health", health),
-        CommandHandler("language", language_cmd),
-        CommandHandler("post", partial(post_cmd, svc=svc)),  # Admin command to manually post
+        CommandHandler("irr", irr),  # Admin only - shows market snapshot
+        CommandHandler("health", health),  # Admin only - health check
+        CommandHandler("language", language_cmd),  # Admin only - change language
+        CommandHandler("post", post_cmd),  # Admin only - post to main channel
+        CommandHandler("posttest", posttest_cmd),  # Admin only - post to test channel
         CallbackQueryHandler(language_callback, pattern="^lang_"),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, partial(any_message, svc=svc)),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, any_message),  # Admin shows data, others store feedback
     ]

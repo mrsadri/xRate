@@ -10,8 +10,8 @@ Files that USE this module:
 - xrate.app (post_rate_job function is registered as scheduled task)
 
 Files that this module USES:
-- xrate.adapters.formatting.formatter (market_lines, market_lines_with_changes)
-- xrate.application.rates_service (RatesService, get_irr_snapshot)
+- xrate.adapters.formatting.formatter (format_persian_market_update, format_persian_daily_report)
+- xrate.application.rates_service (get_irr_snapshot)
 - xrate.application.state_manager (state_manager for state management)
 - xrate.application.stats (stats_tracker for statistics)
 - xrate.adapters.persistence.admin_store (admin_store for admin user ID)
@@ -29,8 +29,8 @@ from decimal import Decimal, ROUND_HALF_UP  # Precise decimal arithmetic for fin
 from telegram.ext import ContextTypes  # type: ignore[import-untyped]  # Telegram bot context type for job callbacks
 from telegram.error import RetryAfter, TimedOut  # type: ignore[import-untyped]  # Telegram API rate limit and timeout exceptions
 
-from xrate.adapters.formatting.formatter import market_lines_with_changes, market_lines  # Message formatting functions
-from xrate.application.rates_service import RatesService, get_irr_snapshot  # Business logic for exchange rates
+from xrate.adapters.formatting.formatter import format_persian_market_update, format_persian_daily_report  # Message formatting functions
+from xrate.application.rates_service import get_irr_snapshot  # Business logic for exchange rates
 from xrate.application.state_manager import state_manager  # State persistence singleton
 from xrate.application.stats import stats_tracker  # Statistics tracking singleton
 from xrate.adapters.persistence.admin_store import admin_store  # Admin user ID storage
@@ -171,7 +171,7 @@ def _should_fetch_provider(provider_name: str, cache_minutes: int) -> bool:
     This prevents rate limiting on providers with longer cache windows.
     
     Args:
-        provider_name: Name of the provider (e.g., "brsapi", "fastforex", "navasan", "wallex")
+        provider_name: Name of the provider (e.g., "navasan", "wallex", "crawler1_bonbast", "crawler2_alanchand")
         cache_minutes: Cache TTL in minutes for this provider
         
     Returns:
@@ -200,21 +200,20 @@ def _should_fetch_provider(provider_name: str, cache_minutes: int) -> bool:
     return False
 
 
-async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -> None:
+async def post_rate_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Scheduled job that monitors market changes and posts updates to Telegram channel.
     
     This function:
-    1. Fetches current market data (EUR/USD rate and IRR snapshot) respecting per-provider TTLs
-    2. Compares with last posted values using configured thresholds
-    3. Posts to channel if any threshold is breached
+    1. Fetches current market data from crawlers (with Navasan fallback)
+    2. Compares with last posted values using consolidated thresholds
+    3. Posts to channel if any threshold is breached (Persian format)
     4. Updates state baseline after posting
     
     Includes re-entrancy protection to prevent concurrent execution.
     
     Args:
         context: Telegram bot context
-        svc: RatesService instance for fetching exchange rates
     """
     global _post_rate_job_lock
     logger = logging.getLogger(__name__)
@@ -226,34 +225,11 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
     
     # Acquire lock for this execution
     async with _post_rate_job_lock:
-        # Check if we should fetch EUR/USD (BRS/FastForex)
-        eurusd_rate = None
-        if _should_fetch_provider("brsapi", settings.brsapi_cache_minutes) or \
-           _should_fetch_provider("fastforex", settings.fastforex_cache_minutes):
-            eurusd_rate = svc.eur_usd()
+        # Fetch IRR snapshot from crawlers (with Navasan fallback)
+        snap = get_irr_snapshot()
         
-        # Check if we should fetch IRR snapshot (BRS/Navasan)
-        snap = None
-        if _should_fetch_provider("brsapi", settings.brsapi_cache_minutes) or \
-           _should_fetch_provider("navasan", settings.navasan_cache_minutes):
-            snap = get_irr_snapshot()
-        
-        # Fetch Tether data from Wallex API (only if TTL allows)
-        tether_price_toman: Optional[int] = None
-        tether_24h_ch: Optional[float] = None
-        if _should_fetch_provider("wallex", settings.wallex_cache_minutes):
-            try:
-                wallex_provider = WallexProvider()
-                tether_data = wallex_provider.get_tether_data()
-                if tether_data:
-                    tether_price_toman = int(tether_data["price"])
-                    tether_24h_ch = float(tether_data["24h_ch"])
-                    logger.debug("Fetched Tether: price=%s, 24h_ch=%s%%", tether_price_toman, tether_24h_ch)
-            except Exception as e:
-                logger.warning("Failed to fetch Tether data from Wallex: %s", e)
-        
-        # Check if we have at least some data
-        if eurusd_rate is None and snap is None:
+        # Check if we have data
+        if snap is None:
             logger.warning("All data sources unavailable - skipping job run")
             return
         
@@ -261,279 +237,180 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
         now = datetime.now(timezone.utc)
         current_state = state_manager.get_current_state()
         
-        if snap:
-            logger.debug("Fetched rates: EUR/USD=%s, USD=%d, EUR=%d, Gold=%d", 
-                        eurusd_rate, snap.usd_toman, snap.eur_toman, snap.gold_1g_toman)
-        else:
-            logger.debug("Fetched rates: EUR/USD=%s, IRR data unavailable", eurusd_rate)
+        logger.debug("Fetched rates: USD=%d, EUR=%d, Gold=%d", 
+                    snap.usd_toman, snap.eur_toman, snap.gold_1g_toman)
 
-            # First run after (re)start: post without % (no baseline), then set baseline
-            if current_state is None:
+        # First run after (re)start: post without % (no baseline), then set baseline
+        if current_state is None:
+            try:
+                logger.info("First run - posting initial market data")
+                
+                # Use Persian daily report format for first run
+                elapsed_seconds = 0
+                text = format_persian_daily_report(snap, elapsed_seconds)
+                
                 try:
-                    logger.info("First run - posting initial market data")
-                    # Collect providers for first run
-                    first_run_providers = []
-                    if snap and snap.provider:
-                        first_run_providers.append(snap.provider)
-                    if eurusd_rate is not None:
-                        eurusd_provider = svc.get_eur_usd_provider()
-                        if eurusd_provider and eurusd_provider not in first_run_providers:
-                            first_run_providers.append(eurusd_provider)
-                    
-                    try:
-                        await context.bot.send_message(
-                            chat_id=settings.channel_id,
-                            text=market_lines(snap, eurusd_rate, providers=first_run_providers if first_run_providers else None),
-                        )
-                    except RetryAfter as e:
-                        logger.warning("Telegram rate limit (429): retry after %s seconds", e.retry_after)
-                        # Wait and retry once
-                        await asyncio.sleep(float(e.retry_after) + 1)
-                        await context.bot.send_message(
-                            chat_id=settings.channel_id,
-                            text=market_lines(snap, eurusd_rate, providers=first_run_providers if first_run_providers else None),
-                        )
-                    except TimedOut:
-                        logger.warning("Telegram request timed out, will retry on next job run")
-                        raise  # Re-raise to trigger outer exception handler
-                    
-                    # Generate and send analysis from Avalai API (first run)
-                    # This is completely non-blocking - failures here never affect the main job
-                    try:
-                        logger.info("Starting Avalai analysis generation for first run post")
-                        avalai = _get_avalai_service()
-                        if avalai:
-                            logger.info("Avalai service obtained for first run, checking client")
-                            if avalai.client:
-                                logger.info("Generating market analysis from Avalai API (first run)")
-                                first_run_text = market_lines(snap, eurusd_rate, providers=first_run_providers if first_run_providers else None)
-                                # Use asyncio timeout to prevent hanging on slow API
-                                try:
-                                    analysis = await asyncio.wait_for(
-                                        avalai.generate_analysis(price_message=first_run_text),
-                                        timeout=30.0  # 30 second timeout for Avalai API
-                                    )
-                                    if analysis:
-                                        logger.info("First run analysis received (length=%d chars), sending to channel", len(analysis))
-                                        await context.bot.send_message(
-                                            chat_id=settings.channel_id,
-                                            text=analysis,
-                                        )
-                                        logger.info("First run analysis sent to channel successfully")
-                                    else:
-                                        logger.warning("First run: No analysis generated from Avalai API (returned None)")
-                                except asyncio.TimeoutError:
-                                    logger.warning("First run: Avalai API call timed out after 30 seconds - analysis skipped")
-                                except Exception as avalai_error:
-                                    logger.warning("First run: Avalai API call failed (non-blocking): %s", avalai_error, exc_info=True)
-                            else:
-                                logger.warning("First run: Avalai client not initialized")
-                        else:
-                            logger.warning("First run: Avalai service not available")
-                    except Exception as e:
-                        # Catch-all for any unexpected errors - never fail the main job
-                        logger.warning("First run: Unexpected error in Avalai analysis (non-blocking): %s", e, exc_info=True)
-                    
-                    # Track the post
-                    stats_tracker.record_post(providers=first_run_providers, is_manual=False)
-                    # Only update state if we have actual data
-                    if snap or eurusd_rate is not None:
-                        state_manager.update_state(
-                            usd_toman=snap.usd_toman if snap else 0,
-                            eur_toman=snap.eur_toman if snap else 0,
-                            gold_1g_toman=snap.gold_1g_toman if snap else 0,
-                            eurusd_rate=eurusd_rate if eurusd_rate is not None else 0.0,
-                            tether_price_toman=tether_price_toman if tether_price_toman is not None else 0,
-                            tether_24h_ch=tether_24h_ch if tether_24h_ch is not None else 0.0,
-                            ts=now,
-                        )
-                    logger.info("Initial baseline set and persisted")
+                    await context.bot.send_message(
+                        chat_id=settings.channel_id,
+                        text=text,
+                    )
+                except RetryAfter as e:
+                    logger.warning("Telegram rate limit (429): retry after %s seconds", e.retry_after)
+                    await asyncio.sleep(float(e.retry_after) + 1)
+                    await context.bot.send_message(
+                        chat_id=settings.channel_id,
+                        text=text,
+                    )
+                except TimedOut:
+                    logger.warning("Telegram request timed out, will retry on next job run")
+                    raise
+                
+                # Track the post
+                provider_name = snap.provider if snap.provider else "unknown"
+                stats_tracker.record_post(providers=[provider_name], is_manual=False)
+                
+                # Update state
+                state_manager.update_state(
+                    usd_toman=snap.usd_toman,
+                    eur_toman=snap.eur_toman,
+                    gold_1g_toman=snap.gold_1g_toman,
+                    eurusd_rate=0.0,  # No longer used, but keep for compatibility
+                    tether_price_toman=0,
+                    tether_24h_ch=0.0,
+                    ts=now,
+                )
+                logger.info("Initial baseline set and persisted")
+            except Exception as e:
+                logger.error("Failed to post initial message: %s", e)
+            return
+
+        # Compare against last announced using consolidated thresholds
+        # USD and EUR use margin_currency_upper/lower_pct
+        # Gold uses margin_gold_upper/lower_pct
+        trigger_usd = False
+        trigger_eur = False
+        trigger_gold = False
+        
+        if snap:
+            trigger_usd = _breach(
+                snap.usd_toman, current_state.usd_toman,
+                settings.margin_currency_upper_pct, settings.margin_currency_lower_pct,
+                instrument="usd",
+            ) if current_state.usd_toman > 0 else True
+            
+            trigger_eur = _breach(
+                snap.eur_toman, current_state.eur_toman,
+                settings.margin_currency_upper_pct, settings.margin_currency_lower_pct,
+                instrument="eur",
+            ) if current_state.eur_toman > 0 else True
+            
+            trigger_gold = _breach(
+                snap.gold_1g_toman, current_state.gold_1g_toman,
+                settings.margin_gold_upper_pct, settings.margin_gold_lower_pct,
+                instrument="gold",
+            ) if current_state.gold_1g_toman > 0 else True
+
+        elapsed_seconds = state_manager.get_elapsed_seconds()
+        
+        logger.debug("Threshold check: USD=%s, EUR=%s, Gold=%s", 
+                    trigger_usd, trigger_eur, trigger_gold)
+
+        # Only post if any threshold is breached
+        if trigger_usd or trigger_eur or trigger_gold:
+            try:
+                logger.info("Threshold breached - posting update to channels")
+                
+                # Build Persian message with changes (generate once)
+                text = format_persian_market_update(
+                    curr=snap,
+                    prev_usd_toman=current_state.usd_toman,
+                    prev_eur_toman=current_state.eur_toman,
+                    prev_gold_1g_toman=current_state.gold_1g_toman,
+                    elapsed_seconds=elapsed_seconds,
+                )
+                
+                # Generate Avalai analysis once (if configured) - reduces API calls
+                analysis_text = None
+                try:
+                    avalai = _get_avalai_service()
+                    if avalai and avalai.client:
+                        try:
+                            analysis_text = await asyncio.wait_for(
+                                avalai.generate_analysis(price_message=text),
+                                timeout=30.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("Avalai API call timed out - skipping analysis")
+                        except Exception as e:
+                            logger.warning("Avalai analysis failed (non-blocking): %s", e)
                 except Exception as e:
-                    logger.error("Failed to post initial message: %s", e)
-                return
-
-            # Compare against last announced using configured margins
-            # Only check thresholds for data we actually have
-            trigger_usd = False
-            trigger_eur = False
-            trigger_gold = False
-            trigger_fx = False
-            trigger_tether = False
-            
-            if snap:
-                trigger_usd = _breach(
-                    snap.usd_toman, current_state.usd_toman,
-                        settings.margin_usd_upper_pct, settings.margin_usd_lower_pct,
-                        instrument="usd",
-                ) if current_state.usd_toman > 0 else True
-                trigger_eur = _breach(
-                    snap.eur_toman, current_state.eur_toman,
-                        settings.margin_eur_upper_pct, settings.margin_eur_lower_pct,
-                        instrument="eur",
-                ) if current_state.eur_toman > 0 else True
-                trigger_gold = _breach(
-                    snap.gold_1g_toman, current_state.gold_1g_toman,
-                        settings.margin_gold_upper_pct, settings.margin_gold_lower_pct,
-                        instrument="gold",
-                ) if current_state.gold_1g_toman > 0 else True
-            
-            if eurusd_rate is not None:
-                trigger_fx = _breach(
-                    eurusd_rate, current_state.eurusd_rate,
-                        settings.margin_eurusd_upper_pct, settings.margin_eurusd_lower_pct,
-                        instrument="eurusd",
-                ) if current_state.eurusd_rate > 0 else True
-
-            # Check Tether 24h_ch threshold
-            if tether_24h_ch is not None:
-                trigger_tether = _breach_tether_24h_ch(
-                    tether_24h_ch,
-                        settings.margin_tether_upper_pct,
-                        settings.margin_tether_lower_pct,
-                )
-            else:
-                trigger_tether = False
-
-            elapsed_seconds = state_manager.get_elapsed_seconds()
-            
-            logger.debug("Threshold check: USD=%s, EUR=%s, Gold=%s, FX=%s, Tether=%s", 
-                        trigger_usd, trigger_eur, trigger_gold, trigger_fx, trigger_tether)
-
-            # Collect providers that were used
-            used_providers = []
-            if snap and snap.provider:
-                used_providers.append(snap.provider)
-            if eurusd_rate is not None:
-                eurusd_provider = svc.get_eur_usd_provider()
-                if eurusd_provider and eurusd_provider not in used_providers:
-                    used_providers.append(eurusd_provider)
-            # Add wallex if Tether data was successfully fetched and used
-            # Only add if we actually have data (not if fetch failed)
-            if tether_price_toman is not None and tether_24h_ch is not None:
-                if "wallex" not in used_providers:
-                    used_providers.append("wallex")
-
-            # Build the message with % changes & elapsed time - only show items that breached thresholds
-            # Note: Tether data is optional - if unavailable, omit it from the message
-            try:
-                text = market_lines_with_changes(
-                    curr=snap,
-                    curr_eur_usd=eurusd_rate,
-                    prev_usd_toman=current_state.usd_toman if snap else None,
-                    prev_eur_toman=current_state.eur_toman if snap else None,
-                    prev_gold_1g_toman=current_state.gold_1g_toman if snap else None,
-                    prev_eur_usd=current_state.eurusd_rate if eurusd_rate is not None else None,
-                    elapsed_seconds=elapsed_seconds,
-                    show_usd=trigger_usd,
-                    show_eur=trigger_eur,
-                    show_gold=trigger_gold,
-                    show_eurusd=trigger_fx,
-                    tether_price_toman=tether_price_toman,
-                    tether_24h_ch=tether_24h_ch,
-                    show_tether=trigger_tether and tether_price_toman is not None and tether_24h_ch is not None,
-                    providers=used_providers if used_providers else None,
-                )
-            except Exception as format_error:
-                # If formatting fails (e.g., due to missing Tether data), log and continue without it
-                logger.warning("Failed to format message with Tether data, retrying without: %s", format_error)
-                text = market_lines_with_changes(
-                    curr=snap,
-                    curr_eur_usd=eurusd_rate,
-                    prev_usd_toman=current_state.usd_toman if snap else None,
-                    prev_eur_toman=current_state.eur_toman if snap else None,
-                    prev_gold_1g_toman=current_state.gold_1g_toman if snap else None,
-                    prev_eur_usd=current_state.eurusd_rate if eurusd_rate is not None else None,
-                    elapsed_seconds=elapsed_seconds,
-                    show_usd=trigger_usd,
-                    show_eur=trigger_eur,
-                    show_gold=trigger_gold,
-                    show_eurusd=trigger_fx,
-                    tether_price_toman=None,  # Skip Tether if formatting failed
-                    tether_24h_ch=None,
-                    show_tether=False,
-                    providers=used_providers if used_providers else None,
-                )
-
-            try:
-                if (trigger_usd or trigger_eur or trigger_gold or trigger_fx or trigger_tether):
-                    logger.info("Threshold breached - posting update to channel")
+                    logger.debug("Avalai service not available: %s", e)
+                
+                # Post to main channel (same message)
+                channels_posted = []
+                try:
+                    await context.bot.send_message(
+                        chat_id=settings.channel_id,
+                        text=text,
+                    )
+                    channels_posted.append("main")
+                    logger.info("Posted to main channel")
+                except RetryAfter as e:
+                    logger.warning("Telegram rate limit (429): retry after %s seconds", e.retry_after)
+                    wait_time = float(e.retry_after) + 1
+                    await asyncio.sleep(wait_time)
+                    await context.bot.send_message(
+                        chat_id=settings.channel_id,
+                        text=text,
+                    )
+                    channels_posted.append("main")
+                except TimedOut:
+                    logger.warning("Telegram request timed out for main channel")
+                
+                # Post to test channel if configured (same message - reduces API calls)
+                if settings.test_channel_id:
                     try:
                         await context.bot.send_message(
-                            chat_id=settings.channel_id,
+                            chat_id=settings.test_channel_id,
                             text=text,
                         )
-                    except RetryAfter as e:
-                        logger.warning("Telegram rate limit (429): retry after %s seconds", e.retry_after)
-                        # Wait and retry once with exponential backoff
-                        wait_time = float(e.retry_after) + 1
-                        await asyncio.sleep(wait_time)
-                        await context.bot.send_message(
-                            chat_id=settings.channel_id,
-                            text=text,
-                        )
-                    except TimedOut:
-                        logger.warning("Telegram request timed out, will retry on next job run")
-                        raise  # Re-raise to trigger outer exception handler
-                    
-                    # Generate and send analysis from Avalai API
-                    # This is completely non-blocking - failures here never affect the main job
-                    # The price post above is already successful at this point
-                    try:
-                        logger.info("Starting Avalai analysis generation for scheduled post")
-                        avalai = _get_avalai_service()
-                        if avalai:
-                            logger.info("Avalai service obtained, checking client availability")
-                            if avalai.client:
-                                logger.info("Generating market analysis from Avalai API (scheduled post)")
-                                # Use asyncio timeout to prevent hanging on slow API
-                                try:
-                                    analysis = await asyncio.wait_for(
-                                        avalai.generate_analysis(price_message=text),
-                                        timeout=30.0  # 30 second timeout for Avalai API
-                                    )
-                                    if analysis:
-                                        logger.info("Analysis received, sending to channel (length=%d chars)", len(analysis))
-                                        # Send analysis as a separate message to the channel
-                                        await context.bot.send_message(
-                                            chat_id=settings.channel_id,
-                                            text=analysis,
-                                        )
-                                        logger.info("Avalai analysis sent to channel successfully")
-                                    else:
-                                        logger.warning("No analysis generated from Avalai API (returned None)")
-                                except asyncio.TimeoutError:
-                                    logger.warning("Avalai API call timed out after 30 seconds - analysis skipped")
-                                except Exception as avalai_error:
-                                    logger.warning("Avalai API call failed (non-blocking): %s", avalai_error, exc_info=True)
-                            else:
-                                logger.warning("Avalai client not initialized - API key may be missing or invalid")
-                        else:
-                            logger.warning("Avalai service not available (service creation failed or API key not configured)")
+                        channels_posted.append("test")
+                        logger.info("Posted to test channel")
                     except Exception as e:
-                        # Catch-all for any unexpected errors in Avalai integration
-                        # Never let this affect the main job - price post was already successful
-                        logger.warning("Unexpected error in Avalai analysis (non-blocking): %s", e, exc_info=True)
-                        # Job continues normally - analysis is optional
-                    
-                    # Track the post
-                    stats_tracker.record_post(providers=used_providers, is_manual=False)
-                    # Only update state if we have actual data
-                    if snap or eurusd_rate is not None:
-                        state_manager.update_state(
-                            usd_toman=snap.usd_toman if snap else current_state.usd_toman,
-                            eur_toman=snap.eur_toman if snap else current_state.eur_toman,
-                            gold_1g_toman=snap.gold_1g_toman if snap else current_state.gold_1g_toman,
-                            eurusd_rate=eurusd_rate if eurusd_rate is not None else current_state.eurusd_rate,
-                            tether_price_toman=tether_price_toman if tether_price_toman is not None else current_state.tether_price_toman,
-                            tether_24h_ch=tether_24h_ch if tether_24h_ch is not None else current_state.tether_24h_ch,
-                            ts=now,
-                        )
-                    logger.info("New baseline set and persisted")
-                else:
-                    logger.debug("No threshold breached - skipping post")
+                        logger.warning("Failed to post to test channel: %s", e)
+                
+                # Post Avalai analysis to both channels if available (same analysis - reduces API calls)
+                if analysis_text:
+                    for channel_id in [settings.channel_id, settings.test_channel_id]:
+                        if channel_id:
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=channel_id,
+                                    text=analysis_text,
+                                )
+                            except Exception as e:
+                                logger.warning("Failed to post Avalai analysis to channel %s: %s", channel_id, e)
+                
+                # Track the post
+                provider_name = snap.provider if snap.provider else "unknown"
+                stats_tracker.record_post(providers=[provider_name], is_manual=False)
+                
+                # Update state
+                state_manager.update_state(
+                    usd_toman=snap.usd_toman,
+                    eur_toman=snap.eur_toman,
+                    gold_1g_toman=snap.gold_1g_toman,
+                    eurusd_rate=0.0,  # No longer used
+                    tether_price_toman=0,
+                    tether_24h_ch=0.0,
+                    ts=now,
+                )
+                logger.info("New baseline set and persisted (posted to: %s)", ", ".join(channels_posted))
             except Exception as e:
                 logger.error("Failed to post message to channel: %s", e)
                 stats_tracker.record_error(str(e))
+        else:
+            logger.debug("No threshold breached - skipping post")
 
 
 async def startup_notification(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -580,24 +457,22 @@ async def startup_notification(context: ContextTypes.DEFAULT_TYPE) -> None:
 • HTTP Timeout: {settings.http_timeout_seconds} seconds
 
 📊 **Thresholds**
-• USD: ↑{settings.margin_usd_upper_pct}% / ↓{settings.margin_usd_lower_pct}%
-• EUR: ↑{settings.margin_eur_upper_pct}% / ↓{settings.margin_eur_lower_pct}%
+• Currency (USD/EUR): ↑{settings.margin_currency_upper_pct}% / ↓{settings.margin_currency_lower_pct}%
 • Gold: ↑{settings.margin_gold_upper_pct}% / ↓{settings.margin_gold_lower_pct}%
-• EUR/USD: ↑{settings.margin_eurusd_upper_pct}% / ↓{settings.margin_eurusd_lower_pct}%
-• Tether: ↑{settings.margin_tether_upper_pct}% / ↓{settings.margin_tether_lower_pct}%
 
 💾 **Cache Settings**
-• FastForex: {settings.fastforex_cache_minutes} min
 • Navasan: {settings.navasan_cache_minutes} min
-• BRS API: {settings.brsapi_cache_minutes} min
-• Wallex: {settings.wallex_cache_minutes} min"""
+• Wallex: {settings.wallex_cache_minutes} min
+• Crawler1 (Bonbast): {settings.crawler1_interval_minutes} min
+• Crawler2 (AlanChand): {settings.crawler2_interval_minutes} min"""
 
         # Build commands list
         commands_list = """📋 **Available Commands**
-• `/start` - Get current market data (Public)
-• `/irr` - Get Iranian market snapshot (Public)
-• `/health` - Check system health (Public)
-• `/post` - Manually post to channel (Admin)
+• `/start` - Get current market data (Admin only)
+• `/irr` - Get Iranian market snapshot (Admin only)
+• `/health` - Check system health (Admin only)
+• `/post` - Manually post to main channel (Admin)
+• `/posttest` - Manually post to test channel (Admin)
 • `/language` - Change bot language (Admin)"""
 
         message = f"""✅ **Bot Started Successfully**
@@ -742,15 +617,64 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         manual_posts = summary.get("manual_posts", 0)
         provider_usage = summary.get("provider_usage", {})
         
-        # Format provider usage
+        # Format provider usage with Persian names
+        from xrate.shared.language import translate_provider_name
         provider_text = ""
         if provider_usage:
             provider_items = []
             for provider, count in sorted(provider_usage.items(), key=lambda x: x[1], reverse=True):
-                provider_items.append(f"• {provider}: {count}")
+                persian_name = translate_provider_name(provider)
+                provider_items.append(f"• {persian_name}: {count}")
             provider_text = "\n".join(provider_items)
         else:
             provider_text = "• No provider usage data"
+        
+        # Get crawler usage times and counts
+        from xrate.application.crawler_service import get_crawler_usage_times
+        crawler1_time, crawler2_time = get_crawler_usage_times()
+        crawler_usage_counts = summary.get("crawler_usage", {})
+        crawler_info = ""
+        if crawler1_time or crawler2_time or crawler_usage_counts:
+            crawler1_str = crawler1_time.strftime("%Y-%m-%d %H:%M:%S UTC") if crawler1_time else "Never"
+            crawler2_str = crawler2_time.strftime("%Y-%m-%d %H:%M:%S UTC") if crawler2_time else "Never"
+            crawler1_count = crawler_usage_counts.get("crawler1_bonbast", 0)
+            crawler2_count = crawler_usage_counts.get("crawler2_alanchand", 0)
+            crawler_info = f"\n\n🕷️ **Crawler Usage**:\n• Crawler1 (Bonbast): {crawler1_count} times (Last: {crawler1_str})\n• Crawler2 (AlanChand): {crawler2_count} times (Last: {crawler2_str})"
+        
+        # Get feedback from today (last 24h)
+        today = datetime.now(timezone.utc).date().isoformat()
+        feedback_list = []
+        if stats_tracker._stats and today in stats_tracker._stats.daily_stats:
+            today_stats = stats_tracker._stats.daily_stats[today]
+            if hasattr(today_stats, 'feedback') and today_stats.feedback:
+                # Only include feedback from last 24 hours
+                cutoff = datetime.now(timezone.utc).timestamp() - 86400
+                for fb in today_stats.feedback:
+                    try:
+                        fb_time = datetime.fromisoformat(fb.timestamp.replace("Z", "+00:00"))
+                        if fb_time.timestamp() >= cutoff:
+                            feedback_list.append(fb)
+                    except Exception:
+                        pass  # Skip invalid timestamps
+        
+        # Format feedback
+        feedback_text = ""
+        if feedback_list:
+            feedback_items = []
+            for fb in feedback_list:
+                timestamp_str = fb.timestamp[:16].replace('T', ' ') if fb.timestamp else "Unknown"
+                feedback_items.append(f"• @{fb.username} ({timestamp_str}): {fb.message[:50]}...")
+            feedback_text = "\n\n📝 **User Feedback**:\n" + "\n".join(feedback_items)
+        
+        # Get Avalai wallet value
+        from xrate.application.health import health_checker
+        avalai_wallet_status = health_checker.check_avalai_wallet()
+        avalai_wallet_text = ""
+        if avalai_wallet_status.is_healthy and avalai_wallet_status.details:
+            wallet_credit = avalai_wallet_status.details.get("credit", "Unknown")
+            avalai_wallet_text = f"\n\n💰 **Avalai Wallet**: {wallet_credit}"
+        elif not avalai_wallet_status.is_healthy:
+            avalai_wallet_text = f"\n\n💰 **Avalai Wallet**: {avalai_wallet_status.message}"
         
         # Get overall stats
         overall = stats_tracker.get_overall_stats()
@@ -766,7 +690,7 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 ❌ **Errors**: {errors_count}
 
 🌐 **Provider Usage**:
-{provider_text}
+{provider_text}{crawler_info}{feedback_text}{avalai_wallet_text}
 
 🕐 Generated at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"""
         
@@ -778,3 +702,65 @@ async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Daily summary sent to admin")
     except Exception as e:
         logger.error("Failed to send daily summary: %s", e)
+
+
+async def daily_morning_post(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Daily morning post at 8:00 AM (excluding Thursday and Friday).
+    
+    Posts market data in Persian daily report format to main channel.
+    """
+    logger = logging.getLogger(__name__)
+    
+    # Check if today is Thursday (3) or Friday (4) - skip if so
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # Monday=0, Tuesday=1, Wednesday=2, Thursday=3, Friday=4, Saturday=5, Sunday=6
+    
+    if weekday == 3 or weekday == 4:  # Thursday or Friday
+        logger.info("Skipping daily morning post - today is %s (weekday=%d)", 
+                   "Thursday" if weekday == 3 else "Friday", weekday)
+        return
+    
+    try:
+        snap = get_irr_snapshot()
+        
+        if snap is None:
+            logger.warning("Daily morning post skipped - no market data available")
+            return
+        
+        # Use Persian daily report format (generate once)
+        elapsed_seconds = state_manager.get_elapsed_seconds()
+        text = format_persian_daily_report(snap, elapsed_seconds)
+        
+        # Post to main channel
+        channels_posted = []
+        try:
+            await context.bot.send_message(
+                chat_id=settings.channel_id,
+                text=text,
+            )
+            channels_posted.append("main")
+        except Exception as e:
+            logger.error("Failed to post to main channel: %s", e)
+        
+        # Post to test channel if configured (same message)
+        if settings.test_channel_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=settings.test_channel_id,
+                    text=text,
+                )
+                channels_posted.append("test")
+            except Exception as e:
+                logger.warning("Failed to post to test channel: %s", e)
+        
+        logger.info("Daily morning post sent to channels at 8:00 AM: %s", ", ".join(channels_posted))
+        
+        # Track the post
+        provider_name = snap.provider if snap.provider else "unknown"
+        stats_tracker.record_post(providers=[provider_name], is_manual=False)
+        
+    except Exception as e:
+        logger.error("Failed to send daily morning post: %s", e, exc_info=True)
+        stats_tracker.record_error(str(e))

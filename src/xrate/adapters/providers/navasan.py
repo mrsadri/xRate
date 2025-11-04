@@ -51,14 +51,17 @@ class NavasanProvider:
         Raises:
             ValueError: If API URL is missing or API key is empty
         """
-        self.url = base_url or settings.NAVASAN_URL  # Uses property with backward compat
-        if not self.url or "api_key=" not in self.url:
-            raise ValueError("NAVASAN_URL is missing or api_key not configured in .env.")
-        # Check that api_key has a non-empty value (not just "api_key=")
-        parsed = urllib.parse.urlparse(self.url)
-        params = urllib.parse.parse_qs(parsed.query)
-        if "api_key" not in params or not params["api_key"] or not params["api_key"][0]:
-            raise ValueError("NAVASAN_URL contains empty api_key value.")
+        # Construct URL from navasan_key if provided
+        if base_url:
+            self.url = base_url
+        elif settings.navasan_key:
+            self.url = f"http://api.navasan.tech/latest/?api_key={settings.navasan_key}"
+        else:
+            raise ValueError("Navasan API key not configured. Set NAVASAN_API_KEY in .env (optional, for fallback).")
+        
+        # Validate URL has api_key
+        if "api_key=" not in self.url:
+            raise ValueError("NAVASAN_URL is missing api_key parameter.")
         self.timeout = timeout or settings.http_timeout_seconds
         self.ttl = timedelta(minutes=settings.navasan_cache_minutes)
 

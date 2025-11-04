@@ -5,6 +5,49 @@ All notable changes to XRate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2025-11-XX
+
+### 🚀 Major Changes - Complete Refactoring
+
+#### Major Architecture Changes
+- **Removed Providers**: Completely removed `fastforex` and `brsapi` providers
+- **Web Crawlers as Primary Source**: Crawlers (Bonbast, AlanChand) are now the primary data source
+- **Consolidated Thresholds**: Single threshold for all currencies (USD/EUR), single threshold for gold
+- **Admin-Only Commands**: All commands now restricted to admin users (configured via `ADMIN_USERNAME`)
+- **User Feedback System**: Non-admin messages stored as feedback and included in daily reports
+- **Persian as Default**: Default language changed to Persian (فارسی)
+- **Two Channels**: Added support for test channel (`/posttest`) and main channel (`/post`)
+- **Daily Morning Posts**: Automatic 8:00 AM posts (excluding Thursday and Friday)
+
+#### Features Added
+- **Crawler Health Monitoring**: Health check now includes crawler status and last usage times
+- **Avalai Wallet Check**: Added wallet credit check to health command
+- **Crawler Usage Times**: Daily reports now include crawler usage times
+- **Persian Provider Names**: Provider names translated to Persian (ولکس، الان‌چند، بن‌بست، نوسان)
+- **Persian Message Format**: New Persian message format matching specified requirements
+- **Removed EUR/USD Conversion**: All EUR/USD conversion rate functionality removed
+
+#### Technical Improvements
+- **Crawler Fallback**: Automatic fallback from Bonbast → AlanChand → Navasan
+- **TTL-Based Caching**: Crawlers use class-level caching to prevent rate limiting
+- **Statistics Enhancement**: Daily reports include user feedback and crawler usage times
+- **Error Handling**: Improved error handling for crawler failures
+
+### 🔧 Configuration Changes
+- Removed: `FASTFOREX_KEY`, `FASTFOREX_CACHE_MINUTES`, `BRSAPI_KEY`, `BRSAPI_CACHE_MINUTES`
+- Added: `CRAWLER1_URL`, `CRAWLER1_INTERVAL_MINUTES`, `CRAWLER2_URL`, `CRAWLER2_INTERVAL_MINUTES`
+- Added: `TEST_CHANNEL_ID` for test channel
+- Added: `DEFAULT_LANGUAGE=fa` (default to Persian)
+- Changed: Thresholds consolidated to `MARGIN_CURRENCY_UPPER_PCT`, `MARGIN_CURRENCY_LOWER_PCT`, `MARGIN_GOLD_UPPER_PCT`, `MARGIN_GOLD_LOWER_PCT`
+
+### 📝 Documentation Updates
+- Updated README.md to reflect new architecture
+- Updated command documentation
+- Updated configuration examples
+- Removed references to deleted providers
+
+---
+
 ## [1.1.0] - 2025-11-XX
 
 ### 🐛 Fixed - Critical Bug Fixes
@@ -118,7 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🎉 Initial Release
 
 - **Core Functionality**: EUR→USD exchange rate monitoring and Iranian market data tracking
-- **Multi-Provider Support**: BRS API, FastForex, Navasan, Wallex with intelligent fallback
+- **Multi-Source Support**: Web Crawlers (Bonbast, AlanChand), Navasan API, Wallex with intelligent fallback
 - **Smart Posting**: Configurable percentage thresholds for automatic market updates
 - **Interactive Commands**: `/start`, `/irr`, `/health`, `/post`, `/language`
 - **Health Monitoring**: Real-time system health checks and API status

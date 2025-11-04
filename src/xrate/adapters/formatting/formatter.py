@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional, List
 from xrate.domain.models import IrrSnapshot
-from xrate.shared.language import translate
+from xrate.shared.language import translate, format_persian_number, get_language, LANG_FARSI
 
 
 def format_irr_snapshot(title: str, snap: Optional[IrrSnapshot]) -> str:
@@ -245,3 +245,138 @@ def market_lines_with_changes(
         lines.append(translate("reported_by", providers=provider_names))
     
     return "\n".join(lines) if lines else translate("no_data")
+
+
+def format_persian_market_update(
+    curr: Optional[IrrSnapshot],
+    prev_usd_toman: Optional[int],
+    prev_eur_toman: Optional[int],
+    prev_gold_1g_toman: Optional[int],
+    elapsed_seconds: int,
+) -> str:
+    """
+    Format market update in Persian format as specified.
+    
+    Format:
+    نوسان جدید نبش بازار مشاهده شد
+    
+    دلار: ۱۰۸ هزار و ۵۰۰ تومان        1.0% 📉
+    یورو : ۱۲۴ هزار و ۲۰۰ تومان         0.0% ⏸
+    طلا: ۱۰ میلیون و  ۵۳۱ هزار تومن     0.1% 📈
+    
+    مدت آرامش بازار: ۱ ساعت و ۲۰ دقیقه
+    
+    Args:
+        curr: Current market snapshot
+        prev_usd_toman: Previous USD price
+        prev_eur_toman: Previous EUR price
+        prev_gold_1g_toman: Previous Gold price
+        elapsed_seconds: Elapsed time since last update
+        
+    Returns:
+        Formatted Persian message
+    """
+    if not curr:
+        return translate("no_data")
+    
+    lines = []
+    lines.append(translate("market_update_header"))
+    lines.append("")  # Empty line
+    
+    # USD
+    usd_formatted = format_persian_number(curr.usd_toman) + " تومان"
+    usd_pct = _fmt_pct(curr.usd_toman, prev_usd_toman or 0)
+    lines.append(translate("usd_line", value=usd_formatted, change=usd_pct))
+    
+    # EUR
+    eur_formatted = format_persian_number(curr.eur_toman) + " تومان"
+    eur_pct = _fmt_pct(curr.eur_toman, prev_eur_toman or 0)
+    lines.append(translate("eur_line", value=eur_formatted, change=eur_pct))
+    
+    # Gold
+    gold_formatted = format_persian_number(curr.gold_1g_toman) + " تومن"
+    gold_pct = _fmt_pct(curr.gold_1g_toman, prev_gold_1g_toman or 0)
+    lines.append(translate("gold_line", value=gold_formatted, change=gold_pct))
+    
+    lines.append("")  # Empty line
+    
+    # Elapsed time in Persian
+    elapsed = _fmt_elapsed_persian(elapsed_seconds)
+    lines.append(translate("time_elapsed", elapsed=elapsed))
+    
+    return "\n".join(lines)
+
+
+def format_persian_daily_report(
+    curr: Optional[IrrSnapshot],
+    elapsed_seconds: int,
+) -> str:
+    """
+    Format daily report in Persian format.
+    
+    Format:
+    گزارش روزانه قیمت‌ها:
+    
+    دلار: ۱۰۸ هزار و ۵۰۰ تومان        
+    یورو : ۱۲۴ هزار و ۲۰۰ تومان         
+    طلا: ۱۰ میلیون و  ۵۳۱ هزار تومن   
+    
+    مدت آرامش بازار: ۱ ساعت و ۲۰ دقیقه
+    
+    Args:
+        curr: Current market snapshot
+        elapsed_seconds: Elapsed time since last update
+        
+    Returns:
+        Formatted Persian daily report
+    """
+    if not curr:
+        return translate("no_data")
+    
+    lines = []
+    lines.append(translate("daily_report_header"))
+    lines.append("")  # Empty line
+    
+    # USD
+    usd_formatted = format_persian_number(curr.usd_toman) + " تومان"
+    lines.append(translate("usd_line", value=usd_formatted, change=""))
+    
+    # EUR
+    eur_formatted = format_persian_number(curr.eur_toman) + " تومان"
+    lines.append(translate("eur_line", value=eur_formatted, change=""))
+    
+    # Gold
+    gold_formatted = format_persian_number(curr.gold_1g_toman) + " تومن"
+    lines.append(translate("gold_line", value=gold_formatted, change=""))
+    
+    lines.append("")  # Empty line
+    
+    # Elapsed time in Persian
+    elapsed = _fmt_elapsed_persian(elapsed_seconds)
+    lines.append(translate("time_elapsed", elapsed=elapsed))
+    
+    return "\n".join(lines)
+
+
+def _fmt_elapsed_persian(seconds: int) -> str:
+    """
+    Format elapsed time in Persian: "X ساعت و Y دقیقه" or "Y دقیقه"
+    
+    Args:
+        seconds: Elapsed time in seconds
+        
+    Returns:
+        Formatted Persian time string
+    """
+    if seconds < 0:
+        seconds = 0
+    minutes = seconds // 60
+    hours = minutes // 60
+    mins_only = minutes % 60
+    
+    if hours > 0 and mins_only > 0:
+        return f"{hours} ساعت و {mins_only} دقیقه"
+    elif hours > 0:
+        return f"{hours} ساعت"
+    else:
+        return f"{mins_only} دقیقه"

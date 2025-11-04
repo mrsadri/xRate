@@ -1,70 +1,85 @@
-# API Providers Documentation
+# Data Sources Documentation
 
-## Provider Overview
+## Data Source Overview
 
-The XRate bot uses **4 providers** with intelligent fallback mechanisms:
+The XRate bot uses **web crawlers as primary data sources** with API fallback mechanisms:
 
-1. **BRS API** (Primary Provider)
-2. **FastForex** (Fallback Provider)
-3. **Navasan** (Fallback Provider)
-4. **Wallex** (Standalone Provider)
+1. **Web Crawlers** (Primary Sources)
+   - **Bonbast.com** (Crawler1)
+   - **AlanChand.com** (Crawler2)
+2. **API Providers** (Fallback Sources)
+   - **Navasan** (Fallback when crawlers fail)
+   - **Wallex** (Tether data, standalone)
+3. **Avalai** (Optional AI Analysis)
+
+**Priority Order**: Crawlers (Bonbast → AlanChand) → Navasan API
 
 ---
 
-## 1. BRS API (Primary Provider)
+## 1. Web Crawlers (Primary Data Sources)
 
-**Purpose**: Primary source for EUR/USD rates and Iranian market data (USD, EUR, 18K Gold in Toman)
+### 1.1 Bonbast.com (Crawler1)
 
-**URL**: https://brsapi.ir/Api/Market/Gold_Currency.php
+**Purpose**: Primary source for USD, EUR, and GoldGram sell prices
 
-**Key Required**: Yes - Get from [brsapi.ir](https://brsapi.ir)
+**URL**: https://www.bonbast.com/ (configurable via `CRAWLER1_URL`)
+
+**Key Required**: No (public website)
 
 **Provides**:
-- EUR/USD exchange rate
-- USD price in Toman
-- EUR price in Toman
-- 18K Gold price per gram in Toman
+- USD sell price in Toman
+- EUR sell price in Toman
+- GoldGram (18K) sell price in Toman
 
-**Fallback Strategy**: If BRS fails, uses FastForex for EUR/USD and Navasan for Iranian market data
+**Scheduling**: Runs every 37 minutes by default (configurable via `CRAWLER1_INTERVAL_MINUTES`)
 
-**Cache**: Configurable via `BRSAPI_CACHE_MINUTES` (default: 15 minutes)
+**Caching**: Built-in TTL-based caching at class level to prevent rate limiting and IP bans
 
-**API Key Format**: Included in URL as query parameter `?key=YOUR_KEY`
+**Fallback Strategy**: If Bonbast fails, tries AlanChand, then Navasan API
 
----
-
-## 2. FastForex (Fallback Provider)
-
-**Purpose**: Fallback for EUR/USD exchange rates when BRS API fails
-
-**URL**: https://api.fastforex.io/
-
-**Key Required**: Yes - Get from [FastForex.io Console](https://console.fastforex.io/api-keys/listing)
-
-**Provides**: EUR/USD exchange rate only
-
-**Usage**: Only used when BRS API fails for EUR/USD rate
-
-**Cache**: Configurable via `FASTFOREX_CACHE_MINUTES` (default: 15 minutes)
-
-**API Key Format**: Included in URL as query parameter `?api_key=YOUR_KEY`
+**Implementation**: See [CRAWLER_LOGIC.md](CRAWLER_LOGIC.md) for detailed implementation
 
 ---
 
-## 3. Navasan (Fallback Provider)
+### 1.2 AlanChand.com (Crawler2)
 
-**Purpose**: Fallback for Iranian market data (USD/EUR/Gold in Toman) when BRS API fails
+**Purpose**: Fallback crawler for USD, EUR, and GoldGram sell prices
+
+**URL**: https://alanchand.com/ (configurable via `CRAWLER2_URL`)
+
+**Key Required**: No (public website)
+
+**Provides**:
+- USD sell price in Toman
+- EUR sell price in Toman
+- GoldGram (18K) sell price in Toman
+
+**Scheduling**: Runs every 43 minutes by default (configurable via `CRAWLER2_INTERVAL_MINUTES`)
+
+**Caching**: Built-in TTL-based caching at class level to prevent rate limiting and IP bans
+
+**Fallback Strategy**: Used when Bonbast fails, then falls back to Navasan API if both crawlers fail
+
+**Implementation**: See [CRAWLER_LOGIC.md](CRAWLER_LOGIC.md) for detailed implementation
+
+---
+
+## 2. API Providers (Fallback Sources)
+
+### 2.1 Navasan (Fallback Provider)
+
+**Purpose**: Fallback for Iranian market data (USD/EUR/Gold in Toman) when both crawlers fail
 
 **URL**: http://api.navasan.tech/latest/
 
-**Key Required**: Yes - Get from [Navasan.tech](http://api.navasan.tech/)
+**Key Required**: Yes (optional, but recommended for fallback) - Get from [Navasan.tech](http://api.navasan.tech/)
 
 **Provides**:
 - USD price in Toman
 - EUR price in Toman
 - 18K Gold price per gram in Toman
 
-**Usage**: Only used when BRS API fails for Iranian market data
+**Usage**: Only used when both Bonbast and AlanChand crawlers fail
 
 **Cache**: Configurable via `NAVASAN_CACHE_MINUTES` (default: 28 minutes, can be up to 1440)
 
@@ -72,7 +87,7 @@ The XRate bot uses **4 providers** with intelligent fallback mechanisms:
 
 ---
 
-## 4. Wallex (Standalone Provider)
+### 2.2 Wallex (Standalone Provider)
 
 **Purpose**: Tether (USDT-TMN) market data including price and 24-hour change percentage
 
@@ -84,7 +99,7 @@ The XRate bot uses **4 providers** with intelligent fallback mechanisms:
 - Tether (USDT-TMN) current price in Toman
 - 24-hour change percentage
 
-**Usage**: Checked separately for Tether market data; added to messages when threshold is breached
+**Usage**: Checked separately for Tether market data (optional feature)
 
 **Standalone**: No fallback (optional feature)
 
@@ -92,78 +107,122 @@ The XRate bot uses **4 providers** with intelligent fallback mechanisms:
 
 ---
 
-## 5. Avalai API (AI Market Analysis)
+## 3. Avalai API (AI Market Analysis)
 
 **Purpose**: Optional AI-powered market analysis in Farsi
 
 **URL**: https://api.avalai.ir/v1
 
-**Key Required**: Yes (optional) - Get from [avalai.ir](https://avalai.ir)
+**Key Required**: Yes (optional) - Get from [Avalai.ir](https://avalai.ir)
 
-**Model**: GPT-5 via Avalai API
+**Provides**:
+- AI-generated market analysis in Persian/Farsi
+- Market commentary and insights
 
-**How It Works**:
-1. After each price update is posted to the channel
-2. The bot sends the price message to Avalai API with context about recent Iran news
-3. Avalai generates a contextual one-line analysis in Farsi
-4. The analysis is automatically sent as a separate message to the channel
+**Usage**: Optional - only used if `AVALAI_KEY` is configured
 
-**Example Output**: "بر اساس کاهش قیمت دلار و یورو، احتمالاً فشارهای سیاسی بر بازار ارز تاثیرگذار بوده است."
+**Cache**: No caching (generated on-demand)
 
-**Configuration**: 
-- Set `AVALAI_KEY` in `.env` file to enable the feature
-- Leave empty or omit to disable (bot continues working normally)
-- Feature gracefully handles API failures without affecting main posting functionality
+**Integration**: Non-blocking - failures never affect main posting functionality
 
 ---
 
-## Provider Chain Flow
+## Data Flow Diagram
 
-### EUR/USD Rate Chain
 ```
-BRS API (Primary) → FastForex (Fallback)
-```
-
-### Iranian Market Chain
-```
-BRS API (Primary) → Navasan (Fallback)
-```
-
-### Tether Chain
-```
-Wallex (Standalone, no fallback)
+┌─────────────────────────────────────────────────────────────┐
+│                    Market Data Request                      │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Step 1: Try Crawler1 (Bonbast)                            │
+│  - Check cache validity                                    │
+│  - If cache expired, fetch fresh HTML                      │
+│  - Parse USD, EUR, GoldGram prices                         │
+│  - Return if all prices found                              │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                    ┌──────┴──────┐
+                    │             │
+               SUCCESS          FAILURE
+                    │             │
+                    ▼             ▼
+         Return snapshot    ┌─────────────────────────────────┐
+                            │ Step 2: Try Crawler2 (AlanChand)│
+                            │ - Check cache validity          │
+                            │ - If cache expired, fetch HTML  │
+                            │ - Parse USD, EUR, GoldGram      │
+                            │ - Return if all prices found    │
+                            └──────────────────┬──────────────┘
+                                               │
+                                        ┌──────┴──────┐
+                                        │             │
+                                   SUCCESS          FAILURE
+                                        │             │
+                                        ▼             ▼
+                             Return snapshot    ┌─────────────────────┐
+                                                │ Step 3: Navasan API │
+                                                │ - Fallback to API   │
+                                                │ - Return if available│
+                                                └─────────────────────┘
 ```
 
 ---
 
-## Per-Provider TTL Tracking
+## Configuration
 
-The bot tracks each provider's TTL independently to prevent rate limiting:
+### Environment Variables
 
-- **Post Interval**: Automatically calculated as `min(all cache TTLs)`
-- **Provider Fetching**: Each provider is only fetched when its individual TTL has elapsed
-- **Example**: If Navasan has 28-minute TTL but job runs every 15 minutes, Navasan is only fetched once every 28 minutes
+```bash
+# Crawler Settings
+CRAWLER1_URL=https://www.bonbast.com/
+CRAWLER1_INTERVAL_MINUTES=37
+CRAWLER2_URL=https://alanchand.com/
+CRAWLER2_INTERVAL_MINUTES=43
 
-This prevents hitting rate limits on providers with longer cache windows.
+# API Keys (for fallback)
+NAVASAN_API_KEY=your_navasan_key  # Optional
+AVALAI_KEY=your_avalai_key  # Optional
+
+# Cache Settings
+NAVASAN_CACHE_MINUTES=28
+WALLEX_CACHE_MINUTES=15
+```
+
+---
+
+## Provider Names in Persian
+
+Provider names are translated to Persian in messages:
+- **Wallex** → ولکس
+- **AlanChand** → الان‌چند
+- **Bonbast** → بن‌بست
+- **Navasan** → نوسان
+
+---
+
+## Health Monitoring
+
+All data sources are monitored via the `/health` command:
+- **Crawlers**: Status, last usage times, and fetched prices
+- **Navasan**: API availability and response time
+- **Wallex**: API availability
+- **Avalai**: Wallet credit and API availability
 
 ---
 
 ## Error Handling
 
-All providers include:
-- **Timeout Handling**: Configurable HTTP timeouts (default: 10 seconds)
-- **Retry Logic**: Automatic fallback to next provider in chain
-- **Cache Validation**: TTL-based caching to reduce API calls
-- **Graceful Degradation**: Bot continues working even if some providers fail
+- **Crawler Failures**: Automatic fallback to next crawler or Navasan API
+- **API Failures**: Graceful degradation with error logging
+- **Network Issues**: Retry logic with timeouts
+- **Data Validation**: Strict validation of fetched prices before use
 
 ---
 
-## Rate Limiting
+## See Also
 
-Each provider is tracked independently to respect their individual cache TTLs, preventing:
-- 429 (Too Many Requests) errors
-- API bans
-- Unnecessary API calls
-
-The bot's job scheduler respects per-provider TTL windows even when the global post interval is shorter.
-
+- [CRAWLER_LOGIC.md](CRAWLER_LOGIC.md) - Detailed crawler implementation
+- [README.md](../README.md) - Main project documentation
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture

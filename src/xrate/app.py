@@ -12,9 +12,7 @@ Files that USE this module:
 Files that this module USES:
 - xrate.shared.logging_conf (setup_logging for logging configuration)
 - xrate.config (settings for configuration management)
-- xrate.adapters.providers.brsapi (BRSAPIProvider for primary market data)
-- xrate.adapters.providers.fastforex (FastForexProvider for EUR→USD fallback)
-- xrate.application.rates_service (RatesService for business logic)
+- xrate.application.rates_service (get_irr_snapshot for market data)
 - xrate.adapters.telegram.handlers (build_handlers for command handlers)
 - xrate.adapters.telegram.jobs (post_rate_job for scheduled tasks)
 """
@@ -33,14 +31,13 @@ from telegram.ext import Application  # Main Telegram bot application class
 from telegram.error import TimedOut, NetworkError, Conflict  # Telegram API error exceptions
 
 from xrate.shared.logging_conf import setup_logging  # Configure logging with file rotation
-from xrate.adapters.providers.fastforex import FastForexProvider  # FastForex API provider for EUR/USD rates
-from xrate.adapters.providers.brsapi import BRSAPIProvider  # BRS API provider for Iranian market data
-from xrate.application.rates_service import RatesService, ProviderChain  # Business logic for exchange rates
+from xrate.application.rates_service import get_irr_snapshot  # Business logic for exchange rates
 from xrate.adapters.telegram.handlers import build_handlers  # Telegram command handlers factory
 from xrate.adapters.telegram.jobs import (
     post_rate_job,  # Scheduled job to post market updates
     startup_notification,  # Send startup message to admin
     daily_summary_job,  # Daily statistics summary job
+    daily_morning_post,  # Daily 8 AM post (excluding Thu/Fri)
     crawler1_job,  # Crawler1 (Bonbast) scheduled job
     crawler2_job,  # Crawler2 (AlanChand) scheduled job
 )
@@ -117,9 +114,8 @@ def main() -> None:
     This function:
     1. Sets up logging and validates configuration
     2. Creates Telegram application instance
-    3. Initializes provider chain (BRS primary, FastForex fallback)
-    4. Registers command and message handlers
-    5. Schedules periodic job for market updates
+    3. Registers command and message handlers
+    4. Schedules periodic jobs for market updates (crawlers and posting)
     6. Starts the bot polling loop
     """
     # Logging + config
@@ -165,34 +161,37 @@ def main() -> None:
     # Telegram allows up to 30 req/sec, so even 1 second would be safe
     app = Application.builder().token(settings.bot_token).build()
 
-    # Dependency injection: BRS API as primary, FastForex as fallback for EUR→USD
-    brs_provider = BRSAPIProvider()
-    fastforex_provider = FastForexProvider()
-    provider_chain = ProviderChain(primary=brs_provider, fallback=fastforex_provider)
-    svc = RatesService(provider=provider_chain)
+    # No provider chain needed - crawlers and Navasan are used directly via get_irr_snapshot()
 
-    # Handlers
-    for h in build_handlers(svc):
+    # Handlers (no service needed - functions use get_irr_snapshot directly)
+    for h in build_handlers():
         app.add_handler(h)
 
     # Scheduled job (interval from .env)
     app.job_queue.run_repeating(
-        callback=partial(post_rate_job, svc=svc),
+        callback=post_rate_job,
         interval=timedelta(minutes=settings.post_interval_minutes),
         first=0,  # start immediately at boot
-        name="eur_usd_poster",
+        name="market_poster",
     )
     
-    # Daily summary job at 9 PM (21:00) local time (timezone-aware)
-    # Use UTC timezone for consistency (or configure via settings if needed)
+    # Daily summary job at 9 PM (21:00) UTC
     from zoneinfo import ZoneInfo
-    # Default to UTC, but can be configured to use local timezone (e.g., Europe/Berlin)
-    daily_summary_tz = ZoneInfo("UTC")  # Can be made configurable via settings
+    daily_summary_tz = ZoneInfo("UTC")
     daily_summary_time = time(21, 0, 0, tzinfo=daily_summary_tz)
     app.job_queue.run_daily(
         callback=daily_summary_job,
-        time=daily_summary_time,  # 9 PM timezone-aware
+        time=daily_summary_time,
         name="daily_summary",
+    )
+    
+    # Daily morning post at 8:00 AM UTC (excluding Thursday and Friday)
+    daily_morning_tz = ZoneInfo("UTC")
+    daily_morning_time = time(8, 0, 0, tzinfo=daily_morning_tz)
+    app.job_queue.run_daily(
+        callback=daily_morning_post,
+        time=daily_morning_time,
+        name="daily_morning_post",
     )
     
     # Startup notification (send after bot is ready - run once after 5 seconds)
