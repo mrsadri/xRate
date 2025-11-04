@@ -18,25 +18,25 @@ Files that this module USES:
 - xrate.config (settings for thresholds and channel configuration)
 - xrate.adapters.providers.wallex (WallexProvider for Tether data)
 """
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional
-from datetime import datetime, timezone, time, timedelta
-import logging
-import asyncio
-from decimal import Decimal, ROUND_HALF_UP
+from __future__ import annotations  # Enable postponed evaluation of annotations
+from dataclasses import dataclass  # Decorator for creating data classes
+from typing import Optional  # Type hints for optional values
+from datetime import datetime, timezone, time, timedelta  # Date/time utilities for timestamps and scheduling
+import logging  # Standard library for logging messages
+import asyncio  # Asynchronous programming support for async/await
+from decimal import Decimal, ROUND_HALF_UP  # Precise decimal arithmetic for financial calculations
 
-from telegram.ext import ContextTypes  # type: ignore[import-untyped]
-from telegram.error import RetryAfter, TimedOut  # type: ignore[import-untyped]
+from telegram.ext import ContextTypes  # Telegram bot context type for job callbacks
+from telegram.error import RetryAfter, TimedOut  # Telegram API rate limit and timeout exceptions
 
-from xrate.adapters.formatting.formatter import market_lines_with_changes, market_lines
-from xrate.application.rates_service import RatesService, get_irr_snapshot
-from xrate.application.state_manager import state_manager
-from xrate.application.stats import stats_tracker
-from xrate.adapters.persistence.admin_store import admin_store
-from xrate.adapters.providers.wallex import WallexProvider
-from xrate.adapters.ai.avalai import AvalaiService
-from xrate.config import settings
+from xrate.adapters.formatting.formatter import market_lines_with_changes, market_lines  # Message formatting functions
+from xrate.application.rates_service import RatesService, get_irr_snapshot  # Business logic for exchange rates
+from xrate.application.state_manager import state_manager  # State persistence singleton
+from xrate.application.stats import stats_tracker  # Statistics tracking singleton
+from xrate.adapters.persistence.admin_store import admin_store  # Admin user ID storage
+from xrate.adapters.providers.wallex import WallexProvider  # Wallex API provider for Tether data
+from xrate.adapters.ai.avalai import AvalaiService  # AI-powered market analysis service
+from xrate.config import settings  # Application configuration and settings
 
 
 # Hysteresis state: track last breach direction per instrument to prevent flip-flop
@@ -257,14 +257,15 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
             logger.warning("All data sources unavailable - skipping job run")
             return
         
+        # Get current timestamp and state (used throughout the function)
+        now = datetime.now(timezone.utc)
+        current_state = state_manager.get_current_state()
+        
         if snap:
             logger.debug("Fetched rates: EUR/USD=%s, USD=%d, EUR=%d, Gold=%d", 
                         eurusd_rate, snap.usd_toman, snap.eur_toman, snap.gold_1g_toman)
         else:
             logger.debug("Fetched rates: EUR/USD=%s, IRR data unavailable", eurusd_rate)
-
-            now = datetime.now(timezone.utc)
-            current_state = state_manager.get_current_state()
 
             # First run after (re)start: post without % (no baseline), then set baseline
             if current_state is None:
@@ -287,7 +288,6 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                     except RetryAfter as e:
                         logger.warning("Telegram rate limit (429): retry after %s seconds", e.retry_after)
                         # Wait and retry once
-                        import asyncio
                         await asyncio.sleep(float(e.retry_after) + 1)
                         await context.bot.send_message(
                             chat_id=settings.channel_id,
@@ -465,7 +465,6 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE, svc: RatesService) -
                     except RetryAfter as e:
                         logger.warning("Telegram rate limit (429): retry after %s seconds", e.retry_after)
                         # Wait and retry once with exponential backoff
-                        import asyncio
                         wait_time = float(e.retry_after) + 1
                         await asyncio.sleep(wait_time)
                         await context.bot.send_message(
@@ -620,6 +619,98 @@ async def startup_notification(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Startup notification sent to admin")
     except Exception as e:
         logger.error("Failed to send startup notification: %s", e)
+
+
+async def crawler1_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Scheduled job for Crawler1 (Bonbast) to fetch prices every configured interval.
+    
+    Fetches USD, EUR, and GoldGram sell prices from bonbast.com and logs the results.
+    The crawler has built-in caching to prevent too frequent requests.
+    
+    Args:
+        context: Telegram bot context (not used but required by job queue)
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        from xrate.adapters.crawlers.bonbast_crawler import BonbastCrawler
+        from xrate.config import settings
+        
+        crawler = BonbastCrawler(
+            url=settings.crawler1_url,
+            cache_minutes=settings.crawler1_interval_minutes,
+            timeout=settings.http_timeout_seconds,
+        )
+        
+        result = crawler.fetch()
+        
+        logger.info(
+            "Crawler1 (Bonbast) fetched: USD=%s, EUR=%s, GoldGram=%s",
+            result.usd_sell,
+            result.eur_sell,
+            result.gold_gram_sell,
+        )
+        
+        # Log warning if any prices are missing
+        if not result.usd_sell or not result.eur_sell or not result.gold_gram_sell:
+            missing = []
+            if not result.usd_sell:
+                missing.append("USD")
+            if not result.eur_sell:
+                missing.append("EUR")
+            if not result.gold_gram_sell:
+                missing.append("GoldGram")
+            logger.warning("Crawler1 (Bonbast) missing prices: %s", ", ".join(missing))
+            
+    except Exception as e:
+        logger.error("Crawler1 (Bonbast) job failed: %s", e, exc_info=True)
+
+
+async def crawler2_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Scheduled job for Crawler2 (AlanChand) to fetch prices every configured interval.
+    
+    Fetches USD, EUR, and GoldGram sell prices from alanchand.com and logs the results.
+    The crawler has built-in caching to prevent too frequent requests.
+    
+    Args:
+        context: Telegram bot context (not used but required by job queue)
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        from xrate.adapters.crawlers.alanchand_crawler import AlanChandCrawler
+        from xrate.config import settings
+        
+        crawler = AlanChandCrawler(
+            url=settings.crawler2_url,
+            cache_minutes=settings.crawler2_interval_minutes,
+            timeout=settings.http_timeout_seconds,
+        )
+        
+        result = crawler.fetch()
+        
+        logger.info(
+            "Crawler2 (AlanChand) fetched: USD=%s, EUR=%s, GoldGram=%s",
+            result.usd_sell,
+            result.eur_sell,
+            result.gold_gram_sell,
+        )
+        
+        # Log warning if any prices are missing
+        if not result.usd_sell or not result.eur_sell or not result.gold_gram_sell:
+            missing = []
+            if not result.usd_sell:
+                missing.append("USD")
+            if not result.eur_sell:
+                missing.append("EUR")
+            if not result.gold_gram_sell:
+                missing.append("GoldGram")
+            logger.warning("Crawler2 (AlanChand) missing prices: %s", ", ".join(missing))
+            
+    except Exception as e:
+        logger.error("Crawler2 (AlanChand) job failed: %s", e, exc_info=True)
 
 
 async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:

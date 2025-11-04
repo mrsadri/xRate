@@ -7,13 +7,21 @@ This module contains domain models representing core business concepts:
 - Exchange rates
 - Provider attribution
 - State changes
+
+Files that USE this module:
+- xrate.application.* (all services use domain models)
+- xrate.adapters.* (adapters create and use domain models)
+- tests.* (tests use domain models for test data)
+
+Files that this module USES:
+- None (pure domain layer, no external dependencies)
 """
 
-from __future__ import annotations
+from __future__ import annotations  # Enable postponed evaluation of annotations
 
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+from dataclasses import dataclass  # Decorator for creating data classes
+from datetime import datetime  # Date/time utilities for timestamps
+from typing import Optional  # Type hints for optional values
 
 
 @dataclass(frozen=True)

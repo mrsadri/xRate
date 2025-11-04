@@ -17,15 +17,16 @@ Files that this module USES:
 - unittest.mock (Mock for API mocking)
 - pytest (testing framework)
 """
-import pytest
-from unittest.mock import Mock, patch
-import requests
-from datetime import datetime, timezone, timedelta
+import pytest  # Testing framework for writing and running tests
 
-from xrate.adapters.providers.brsapi import BRSAPIProvider
-from xrate.adapters.providers.fastforex import FastForexProvider
-from xrate.adapters.providers.navasan import NavasanProvider
-from xrate.adapters.providers.wallex import WallexProvider
+from unittest.mock import Mock, patch  # Mock objects and patching for testing without real API calls
+import requests  # HTTP library (used for mocking responses)
+from datetime import datetime, timezone, timedelta  # Date/time utilities for testing cache timestamps
+
+from xrate.adapters.providers.brsapi import BRSAPIProvider  # BRS API provider to test
+from xrate.adapters.providers.fastforex import FastForexProvider  # FastForex API provider to test
+from xrate.adapters.providers.navasan import NavasanProvider  # Navasan API provider to test
+from xrate.adapters.providers.wallex import WallexProvider  # Wallex API provider to test
 
 
 class TestFastForexProvider:
