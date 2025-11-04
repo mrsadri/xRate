@@ -26,8 +26,8 @@ import logging  # Standard library for logging messages
 import asyncio  # Asynchronous programming support for async/await
 from decimal import Decimal, ROUND_HALF_UP  # Precise decimal arithmetic for financial calculations
 
-from telegram.ext import ContextTypes  # Telegram bot context type for job callbacks
-from telegram.error import RetryAfter, TimedOut  # Telegram API rate limit and timeout exceptions
+from telegram.ext import ContextTypes  # type: ignore[import-untyped]  # Telegram bot context type for job callbacks
+from telegram.error import RetryAfter, TimedOut  # type: ignore[import-untyped]  # Telegram API rate limit and timeout exceptions
 
 from xrate.adapters.formatting.formatter import market_lines_with_changes, market_lines  # Message formatting functions
 from xrate.application.rates_service import RatesService, get_irr_snapshot  # Business logic for exchange rates
