@@ -15,11 +15,12 @@ Files that this module USES:
 - unittest.mock (Mock for service mocking)
 - pytest (testing framework)
 """
-import pytest
-from unittest.mock import Mock, patch
+import pytest  # Testing framework for writing and running tests
 
-from xrate.application.rates_service import RatesService, get_irr_snapshot, _to_int
-from xrate.domain.models import IrrSnapshot
+from unittest.mock import Mock, patch  # Mock objects and patching for testing without real dependencies
+
+from xrate.application.rates_service import RatesService, get_irr_snapshot, _to_int  # Service classes and functions to test
+from xrate.domain.models import IrrSnapshot  # Domain model for test data
 
 
 class TestRatesService:

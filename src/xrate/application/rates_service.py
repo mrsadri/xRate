@@ -17,13 +17,13 @@ Files that this module USES:
 - xrate.adapters.providers.base (RateProvider protocol)
 - xrate.domain.models (IrrSnapshot domain model)
 """
-from __future__ import annotations
+from __future__ import annotations  # Enable postponed evaluation of annotations
 
-from typing import Mapping, Optional, Protocol
+from typing import Mapping, Optional, Protocol  # Type hints for mappings, optional values, and protocols
 
-from xrate.domain.models import IrrSnapshot
-from xrate.adapters.providers.navasan import NavasanProvider
-from xrate.adapters.providers.brsapi import BRSAPIProvider
+from xrate.domain.models import IrrSnapshot  # Domain model for Iranian market snapshot
+from xrate.adapters.providers.navasan import NavasanProvider  # Navasan API provider for market data
+from xrate.adapters.providers.brsapi import BRSAPIProvider  # BRS API provider for market data
 
 
 # RateProvider protocol for type checking
@@ -145,14 +145,30 @@ class RatesService:
 
 def get_irr_snapshot() -> Optional[IrrSnapshot]:
     """
-    Fetch USD/EUR/18k Gold (IR market) from BRS API first, fallback to Navasan.
+    Fetch USD/EUR/18k Gold (IR market) from crawlers first, then fallback to API providers.
+    
+    Priority order:
+    1. Crawlers (Bonbast, then AlanChand)
+    2. BRS API
+    3. Navasan API
+    
     Normalized to Toman integers.
-    Returns None if both providers are unavailable or fail.
+    Returns None if all sources are unavailable or fail.
     """
     import logging
     log = logging.getLogger(__name__)
     
-    # Try BRS API first
+    # Try crawlers first (priority: crawlers > APIs)
+    try:
+        from xrate.application.crawler_service import get_crawler_snapshot
+        crawler_snap = get_crawler_snapshot()
+        if crawler_snap:
+            log.info("Successfully fetched IRR snapshot from crawlers")
+            return crawler_snap
+    except Exception as e:
+        log.warning("Crawler service failed, falling back to API providers: %s", e)
+    
+    # Fallback to BRS API
     try:
         brs_provider = BRSAPIProvider()
         usd_toman = brs_provider.get_usd_toman()
@@ -173,7 +189,7 @@ def get_irr_snapshot() -> Optional[IrrSnapshot]:
     except Exception as e:
         log.warning("BRS API failed, trying Navasan fallback: %s", e)
     
-    # Fallback to Navasan
+    # Final fallback to Navasan
     try:
         provider = NavasanProvider()
         vals: Mapping[str, str] = provider.get_values(["usd", "eur", "18ayar"])
@@ -208,5 +224,5 @@ def get_irr_snapshot() -> Optional[IrrSnapshot]:
             provider="navasan",
         )
     except Exception as e:
-        log.error("All providers failed. BRS API error logged above, Navasan fallback error: %s", e)
+        log.error("All sources failed. Crawlers, BRS API, and Navasan all failed. Last error: %s", e)
         return None

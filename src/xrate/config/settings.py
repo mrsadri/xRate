@@ -4,21 +4,30 @@ Settings - Pydantic-based Configuration Management
 
 Provides centralized configuration management using Pydantic Settings.
 Supports environment variables with validation and optional YAML overlays.
+
+Files that USE this module:
+- xrate.app (loads settings for bot configuration)
+- xrate.adapters.providers.* (all providers use settings for API keys and URLs)
+- xrate.adapters.telegram.* (telegram handlers and jobs use settings)
+- xrate.application.* (services use settings for configuration)
+
+Files that this module USES:
+- xrate.shared.validators (validation functions for settings)
 """
 
-from __future__ import annotations
+from __future__ import annotations  # Enable postponed evaluation of annotations
 
-import os
-from pathlib import Path
-from typing import Optional
+import os  # Operating system interface for environment variables
+from pathlib import Path  # Object-oriented filesystem paths
+from typing import Optional  # Type hints for optional values
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator  # Data validation and field configuration
+from pydantic_settings import BaseSettings, SettingsConfigDict  # Settings management with Pydantic
 
 from xrate.shared.validators import (
-    validate_api_key,
-    validate_bot_token,
-    validate_channel_id,
+    validate_api_key,  # Validate API key format
+    validate_bot_token,  # Validate Telegram bot token format
+    validate_channel_id,  # Validate Telegram channel ID format
 )
 
 
@@ -57,6 +66,12 @@ class Settings(BaseSettings):
     navasan_cache_minutes: int = Field(default=28, alias="NAVASAN_CACHE_MINUTES", ge=1, le=1440)
     brsapi_cache_minutes: int = Field(default=15, alias="BRSAPI_CACHE_MINUTES", ge=1, le=1440)
     wallex_cache_minutes: int = Field(default=15, alias="WALLEX_CACHE_MINUTES", ge=1, le=1440)
+    
+    # --- Crawler Settings ---
+    crawler1_url: str = Field(default="https://www.bonbast.com/", alias="CRAWLER1_URL")
+    crawler1_interval_minutes: int = Field(default=37, alias="CRAWLER1_INTERVAL_MINUTES", ge=1, le=1440)
+    crawler2_url: str = Field(default="https://alanchand.com/", alias="CRAWLER2_URL")
+    crawler2_interval_minutes: int = Field(default=43, alias="CRAWLER2_INTERVAL_MINUTES", ge=1, le=1440)
     
     # --- Announcement Thresholds (% vs last announced) ---
     margin_usd_upper_pct: float = Field(default=1.0, alias="MARGIN_USD_UPPER_PCT", ge=0.0)
@@ -171,6 +186,22 @@ class Settings(BaseSettings):
     @property
     def WALLEX_CACHE_MINUTES(self) -> int:
         return self.wallex_cache_minutes
+    
+    @property
+    def CRAWLER1_URL(self) -> str:
+        return self.crawler1_url
+    
+    @property
+    def CRAWLER1_INTERVAL_MINUTES(self) -> int:
+        return self.crawler1_interval_minutes
+    
+    @property
+    def CRAWLER2_URL(self) -> str:
+        return self.crawler2_url
+    
+    @property
+    def CRAWLER2_INTERVAL_MINUTES(self) -> int:
+        return self.crawler2_interval_minutes
     
     @property
     def MARGIN_USD_UPPER_PCT(self) -> float:

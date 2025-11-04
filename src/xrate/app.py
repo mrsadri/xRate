@@ -19,25 +19,31 @@ Files that this module USES:
 - xrate.adapters.telegram.jobs (post_rate_job for scheduled tasks)
 """
 
-from __future__ import annotations
+from __future__ import annotations  # Enable postponed evaluation of annotations for forward references
 
-import logging
-import os
-import sys
-import atexit
-from datetime import timedelta, time
-from functools import partial
-from pathlib import Path
+import logging  # Standard library for logging messages and errors
+import os  # Operating system interface for environment variables and process management
+import sys  # System-specific parameters and functions for exit codes
+import atexit  # Register cleanup functions to run when program exits
+from datetime import timedelta, time  # Date and time utilities for scheduling jobs
+from functools import partial  # Create partial functions with preset arguments
+from pathlib import Path  # Object-oriented filesystem paths
 
-from telegram.ext import Application
-from telegram.error import TimedOut, NetworkError, Conflict
+from telegram.ext import Application  # Main Telegram bot application class
+from telegram.error import TimedOut, NetworkError, Conflict  # Telegram API error exceptions
 
-from xrate.shared.logging_conf import setup_logging
-from xrate.adapters.providers.fastforex import FastForexProvider
-from xrate.adapters.providers.brsapi import BRSAPIProvider
-from xrate.application.rates_service import RatesService, ProviderChain
-from xrate.adapters.telegram.handlers import build_handlers
-from xrate.adapters.telegram.jobs import post_rate_job, startup_notification, daily_summary_job
+from xrate.shared.logging_conf import setup_logging  # Configure logging with file rotation
+from xrate.adapters.providers.fastforex import FastForexProvider  # FastForex API provider for EUR/USD rates
+from xrate.adapters.providers.brsapi import BRSAPIProvider  # BRS API provider for Iranian market data
+from xrate.application.rates_service import RatesService, ProviderChain  # Business logic for exchange rates
+from xrate.adapters.telegram.handlers import build_handlers  # Telegram command handlers factory
+from xrate.adapters.telegram.jobs import (
+    post_rate_job,  # Scheduled job to post market updates
+    startup_notification,  # Send startup message to admin
+    daily_summary_job,  # Daily statistics summary job
+    crawler1_job,  # Crawler1 (Bonbast) scheduled job
+    crawler2_job,  # Crawler2 (AlanChand) scheduled job
+)
 
 
 # PID file path for preventing multiple instances
@@ -195,10 +201,29 @@ def main() -> None:
         when=5,  # 5 seconds after startup
         name="startup_notification",
     )
+    
+    # Crawler1 job (Bonbast) - runs every configured interval
+    app.job_queue.run_repeating(
+        callback=crawler1_job,
+        interval=timedelta(minutes=settings.crawler1_interval_minutes),
+        first=0,  # start immediately at boot
+        name="crawler1_bonbast",
+    )
+    
+    # Crawler2 job (AlanChand) - runs every configured interval
+    app.job_queue.run_repeating(
+        callback=crawler2_job,
+        interval=timedelta(minutes=settings.crawler2_interval_minutes),
+        first=0,  # start immediately at boot
+        name="crawler2_alanchand",
+    )
 
     logger.info(
-        "Starting bot polling… post interval=%d minutes",
+        "Starting bot polling… post interval=%d minutes, "
+        "crawler1=%d minutes, crawler2=%d minutes",
         settings.post_interval_minutes,
+        settings.crawler1_interval_minutes,
+        settings.crawler2_interval_minutes,
     )
     
     # Run polling with error handling

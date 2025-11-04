@@ -75,6 +75,10 @@ MIGRATIONS = [
     ("services/cache.py", "src/xrate/adapters/persistence/file_store.py", [
         (r"from config import", "from xrate.config import"),
     ]),
+    
+    # Adapters - Crawlers (if they exist in old structure)
+    # Note: Crawlers are new and may not exist in old structure
+    # They should already be in src/xrate/adapters/crawlers/
 ]
 
 def update_imports(content: str, updates: list) -> str:

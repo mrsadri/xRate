@@ -14,18 +14,19 @@ Files that this module USES:
 - xrate.domain.models (IrrSnapshot for test data)
 - pytest (testing framework)
 """
-import pytest
-from datetime import datetime, timezone
+import pytest  # Testing framework for writing and running tests
+
+from datetime import datetime, timezone  # Date/time utilities for test data
 
 from xrate.adapters.formatting.formatter import (
-    format_irr_snapshot,
-    eur_usd,
-    market_lines,
-    market_lines_with_changes,
-    _fmt_pct,
-    _fmt_elapsed
+    format_irr_snapshot,  # Format IRR snapshot with title
+    eur_usd,  # Format EUR/USD exchange rate
+    market_lines,  # Format market data lines
+    market_lines_with_changes,  # Format market data with percentage changes
+    _fmt_pct,  # Format percentage change
+    _fmt_elapsed  # Format elapsed time
 )
-from xrate.domain.models import IrrSnapshot
+from xrate.domain.models import IrrSnapshot  # Domain model for test data
 
 
 class TestFormatIrrSnapshot:

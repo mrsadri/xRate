@@ -39,14 +39,21 @@ cp .env.example .env  # Edit with your API keys
 python -m xrate
 ```
 
-### **API Providers**
-- **BRS API** (Primary): Iranian market + EUR/USD rates → [Get Key](https://brsapi.ir)
-- **FastForex** (Fallback): EUR/USD rates → [Get Key](https://console.fastforex.io)
-- **Navasan** (Fallback): Iranian market data → [Get Key](http://api.navasan.tech)
-- **Wallex** (Standalone): Tether/USDT-TMN data (no key required)
+### **Data Sources**
+- **Web Crawlers** (Primary): Fetch prices directly from websites
+  - **Bonbast.com** (Crawler1): USD, EUR, GoldGram sell prices every 37 minutes
+  - **AlanChand.com** (Crawler2): USD, EUR, GoldGram sell prices every 43 minutes
+- **API Providers** (Fallback): When crawlers are unavailable
+  - **BRS API**: Iranian market + EUR/USD rates → [Get Key](https://brsapi.ir)
+  - **FastForex**: EUR/USD rates → [Get Key](https://console.fastforex.io)
+  - **Navasan**: Iranian market data → [Get Key](http://api.navasan.tech)
+  - **Wallex**: Tether/USDT-TMN data (no key required)
 - **Avalai** (Optional): AI market analysis → [Get Key](https://avalai.ir)
 
+**Priority Order:** Crawlers → BRS API → Navasan API (for Iranian market data)
+
 **See [API_PROVIDERS.md](docs/API_PROVIDERS.md) for detailed provider information.**
+**See [CRAWLER_LOGIC.md](docs/CRAWLER_LOGIC.md) for crawler implementation details.**
 
 ---
 
@@ -55,7 +62,8 @@ python -m xrate
 ### **Core Functionality**
 - 🔁 **Smart Posting**: Posts market updates based on configurable percentage thresholds
 - 💬 **Interactive Commands**: `/start`, `/irr`, `/health`, `/post`, `/language` with rate limiting
-- 🌍 **Multi-Provider**: BRS → FastForex/Navasan fallback chains with provider attribution
+- 🕷️ **Web Crawlers**: Direct price fetching from Bonbast and AlanChand websites
+- 🌍 **Multi-Source**: Crawlers → API fallback chains with provider attribution
 - 📊 **Change Tracking**: Shows percentage changes and elapsed time since last update
 - 🌐 **Multi-language**: English and Farsi (فارسی) support
 - 📈 **Statistics**: Activity tracking with daily summaries
@@ -91,6 +99,12 @@ FASTFOREX_CACHE_MINUTES=15
 NAVASAN_CACHE_MINUTES=28
 BRSAPI_CACHE_MINUTES=15
 WALLEX_CACHE_MINUTES=15
+
+# Crawler Settings (Web scrapers for price data)
+CRAWLER1_URL=https://www.bonbast.com/
+CRAWLER1_INTERVAL_MINUTES=37
+CRAWLER2_URL=https://alanchand.com/
+CRAWLER2_INTERVAL_MINUTES=43
 
 # Thresholds (% vs last announced)
 MARGIN_USD_UPPER_PCT=1.0      # USD price increase threshold
@@ -140,9 +154,10 @@ xrate/
 │   ├── application/        # Use cases (rates_service, state_manager, stats, health)
 │   ├── adapters/           # External integrations
 │   │   ├── providers/      # API clients (BRS, FastForex, Navasan, Wallex)
+│   │   ├── crawlers/       # Web crawlers (Bonbast, AlanChand)
 │   │   ├── telegram/       # Bot handlers and jobs
 │   │   ├── formatting/     # Message formatting
-│   │   ├── persistence/    # File storage
+│   │   ├── persistence/   # File storage
 │   │   └── ai/             # Avalai API client
 │   ├── config/             # Configuration management
 │   └── shared/             # Utilities (rate_limiter, validators, language)
@@ -231,6 +246,7 @@ make check      # Run all checks
 - **[deploy/SERVER_DEPLOYMENT.md](deploy/SERVER_DEPLOYMENT.md)** - Server deployment details
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Architecture details
 - **[docs/API_PROVIDERS.md](docs/API_PROVIDERS.md)** - API provider details
+- **[docs/CRAWLER_LOGIC.md](docs/CRAWLER_LOGIC.md)** - Web crawler implementation and logic
 
 ---
 
@@ -240,6 +256,7 @@ make check      # Run all checks
 |---------|---------|---------|
 | python-telegram-bot[job-queue] | 21.6 | Telegram bot API |
 | requests | 2.32.3 | HTTP client |
+| beautifulsoup4 | ≥4.12.0 | HTML parsing for web crawlers |
 | python-dotenv | 1.0.1 | Environment variables |
 | pydantic | ≥2.0.0 | Data validation |
 | pydantic-settings | ≥2.0.0 | Settings management |
@@ -248,10 +265,11 @@ make check      # Run all checks
 
 ## 🔍 **Monitoring & Health Checks**
 
-- **Health Monitoring**: BRS API, FastForex, Navasan, Wallex, State Manager, Data Pipeline
+- **Health Monitoring**: BRS API, FastForex, Navasan, Wallex, Crawlers, State Manager, Data Pipeline
 - **Logging**: Structured logging with file rotation (optional)
 - **Rate Limiting**: Per-user limits with namespaced buckets (public/admin/health)
 - **Error Tracking**: Comprehensive exception handling with detailed logging
+- **Crawler Caching**: Built-in TTL-based caching prevents rate limiting and IP bans
 
 ---
 
@@ -288,6 +306,8 @@ MIT License © 2025 **Masih Sadri**
 
 ## 🙏 **Acknowledgments**
 
+- **Bonbast.com** (bonbast.com) for web-crawled market data
+- **AlanChand.com** (alanchand.com) for web-crawled market data
 - **BRS API** (brsapi.ir) for primary market data
 - **FastForex.io** for exchange rate fallback
 - **Navasan.tech** for Iranian market fallback
