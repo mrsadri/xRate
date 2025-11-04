@@ -277,32 +277,36 @@ def format_persian_market_update(
         Formatted Persian message
     """
     if not curr:
-        return translate("no_data")
+        return "داده‌های بازار در دسترس نیست"
     
+    # Force Persian format - don't use translate() to avoid language issues
     lines = []
-    lines.append(translate("market_update_header"))
+    lines.append("نوسان جدید نبش بازار مشاهده شد")
     lines.append("")  # Empty line
     
-    # USD
+    # USD with Persian number formatting
     usd_formatted = format_persian_number(curr.usd_toman) + " تومان"
     usd_pct = _fmt_pct(curr.usd_toman, prev_usd_toman or 0)
-    lines.append(translate("usd_line", value=usd_formatted, change=usd_pct))
+    # Format: "دلار: {value}         {change}"
+    lines.append(f"دلار: {usd_formatted}             {usd_pct}")
     
-    # EUR
+    # EUR with Persian number formatting
     eur_formatted = format_persian_number(curr.eur_toman) + " تومان"
     eur_pct = _fmt_pct(curr.eur_toman, prev_eur_toman or 0)
-    lines.append(translate("eur_line", value=eur_formatted, change=eur_pct))
+    # Format: "یورو : {value}          {change}"
+    lines.append(f"یورو : {eur_formatted}            {eur_pct}")
     
-    # Gold
+    # Gold with Persian number formatting
     gold_formatted = format_persian_number(curr.gold_1g_toman) + " تومن"
     gold_pct = _fmt_pct(curr.gold_1g_toman, prev_gold_1g_toman or 0)
-    lines.append(translate("gold_line", value=gold_formatted, change=gold_pct))
+    # Format: "طلا: {value}     {change}"
+    lines.append(f"طلا: {gold_formatted}     {gold_pct}")
     
     lines.append("")  # Empty line
     
     # Elapsed time in Persian
     elapsed = _fmt_elapsed_persian(elapsed_seconds)
-    lines.append(translate("time_elapsed", elapsed=elapsed))
+    lines.append(f"مدت آرامش بازار: {elapsed}")
     
     return "\n".join(lines)
 
@@ -321,39 +325,85 @@ def format_persian_daily_report(
     یورو : ۱۲۴ هزار و ۲۰۰ تومان         
     طلا: ۱۰ میلیون و  ۵۳۱ هزار تومن   
     
-    مدت آرامش بازار: ۱ ساعت و ۲۰ دقیقه
-    
     Args:
         curr: Current market snapshot
-        elapsed_seconds: Elapsed time since last update
+        elapsed_seconds: Elapsed time since last update (not shown in daily report)
         
     Returns:
         Formatted Persian daily report
     """
     if not curr:
-        return translate("no_data")
+        return "داده‌های بازار در دسترس نیست"
     
+    # Force Persian format - don't use translate() to avoid language issues
     lines = []
-    lines.append(translate("daily_report_header"))
+    lines.append("گزارش روزانه قیمت‌ها:")
     lines.append("")  # Empty line
     
-    # USD
+    # USD with Persian number formatting (no change percentage)
     usd_formatted = format_persian_number(curr.usd_toman) + " تومان"
-    lines.append(translate("usd_line", value=usd_formatted, change=""))
+    lines.append(f"دلار: {usd_formatted}")
     
-    # EUR
+    # EUR with Persian number formatting (no change percentage)
     eur_formatted = format_persian_number(curr.eur_toman) + " تومان"
-    lines.append(translate("eur_line", value=eur_formatted, change=""))
+    lines.append(f"یورو : {eur_formatted}")
     
-    # Gold
+    # Gold with Persian number formatting (no change percentage)
     gold_formatted = format_persian_number(curr.gold_1g_toman) + " تومن"
-    lines.append(translate("gold_line", value=gold_formatted, change=""))
+    lines.append(f"طلا: {gold_formatted}")
     
+    return "\n".join(lines)
+
+
+def format_persian_admin_post(
+    curr: Optional[IrrSnapshot],
+    prev_usd_toman: Optional[int],
+    prev_eur_toman: Optional[int],
+    prev_gold_1g_toman: Optional[int],
+) -> str:
+    """
+    Format admin-requested post in Persian format (via /post command).
+    
+    Format:
+    گزارش قیمت‌ها
+    
+    دلار: ۱۰۸ هزار و ۵۰۰ تومان             1.0% 📉
+    یورو : ۱۲۴ هزار و ۲۰۰ تومان           0.0% ⏸
+    طلا: ۱۰ میلیون و  ۵۳۱ هزار تومن    0.1% 📈
+    
+    Note: No elapsed time shown in admin posts.
+    
+    Args:
+        curr: Current market snapshot
+        prev_usd_toman: Previous USD price
+        prev_eur_toman: Previous EUR price
+        prev_gold_1g_toman: Previous Gold price
+        
+    Returns:
+        Formatted Persian message for admin post
+    """
+    if not curr:
+        return "داده‌های بازار در دسترس نیست"
+    
+    # Force Persian format - don't use translate() to avoid language issues
+    lines = []
+    lines.append("گزارش قیمت‌ها")
     lines.append("")  # Empty line
     
-    # Elapsed time in Persian
-    elapsed = _fmt_elapsed_persian(elapsed_seconds)
-    lines.append(translate("time_elapsed", elapsed=elapsed))
+    # USD with Persian number formatting and change percentage
+    usd_formatted = format_persian_number(curr.usd_toman) + " تومان"
+    usd_pct = _fmt_pct(curr.usd_toman, prev_usd_toman or 0)
+    lines.append(f"دلار: {usd_formatted}             {usd_pct}")
+    
+    # EUR with Persian number formatting and change percentage
+    eur_formatted = format_persian_number(curr.eur_toman) + " تومان"
+    eur_pct = _fmt_pct(curr.eur_toman, prev_eur_toman or 0)
+    lines.append(f"یورو : {eur_formatted}            {eur_pct}")
+    
+    # Gold with Persian number formatting and change percentage
+    gold_formatted = format_persian_number(curr.gold_1g_toman) + " تومن"
+    gold_pct = _fmt_pct(curr.gold_1g_toman, prev_gold_1g_toman or 0)
+    lines.append(f"طلا: {gold_formatted}     {gold_pct}")
     
     return "\n".join(lines)
 
