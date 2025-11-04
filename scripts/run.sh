@@ -29,8 +29,10 @@ python3 -m pip install --upgrade pip >/dev/null 2>&1
 if [ ! -f ".env" ]; then
   echo "🚫 Missing .env file! Please create one with:"
   echo "BOT_TOKEN=..."
-  echo "FASTFOREX_KEY=..."
   echo "CHANNEL_ID=@yourchannel"
+  echo "ADMIN_USERNAME=YourUsername"
+  echo "NAVASAN_API_KEY=...  # Optional"
+  echo "AVALAI_KEY=...  # Optional"
   exit 1
 fi
 

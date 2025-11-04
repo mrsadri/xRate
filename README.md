@@ -1,6 +1,6 @@
 # XRate — Advanced Telegram Exchange Rate Bot
 
-A production-ready Telegram bot that monitors **EUR→USD exchange rates** and **Iranian market data** (USD/EUR/Gold in Toman) with intelligent posting, health monitoring, and comprehensive error handling.
+A production-ready Telegram bot that monitors **Iranian market data** (USD/EUR/Gold in Toman) with intelligent posting, health monitoring, and comprehensive error handling. Uses web crawlers as primary data source with API fallback.
 
 Built with **Clean Architecture** principles.
 
@@ -26,7 +26,7 @@ Built with **Clean Architecture** principles.
 ### **Prerequisites**
 - Python 3.9+ (3.12+ recommended)
 - Telegram Bot Token from [@BotFather](https://t.me/BotFather)
-- API Keys: FastForex, Navasan, BRS API (optional), Avalai (optional)
+- API Keys: Navasan (optional, for fallback), Avalai (optional, for AI analysis)
 
 ### **Installation**
 ```bash
@@ -41,16 +41,14 @@ python -m xrate
 
 ### **Data Sources**
 - **Web Crawlers** (Primary): Fetch prices directly from websites
-  - **Bonbast.com** (Crawler1): USD, EUR, GoldGram sell prices every 37 minutes
-  - **AlanChand.com** (Crawler2): USD, EUR, GoldGram sell prices every 43 minutes
+  - **Bonbast.com** (Crawler1): USD, EUR, GoldGram sell prices every 37 minutes (configurable)
+  - **AlanChand.com** (Crawler2): USD, EUR, GoldGram sell prices every 43 minutes (configurable)
 - **API Providers** (Fallback): When crawlers are unavailable
-  - **BRS API**: Iranian market + EUR/USD rates → [Get Key](https://brsapi.ir)
-  - **FastForex**: EUR/USD rates → [Get Key](https://console.fastforex.io)
   - **Navasan**: Iranian market data → [Get Key](http://api.navasan.tech)
   - **Wallex**: Tether/USDT-TMN data (no key required)
 - **Avalai** (Optional): AI market analysis → [Get Key](https://avalai.ir)
 
-**Priority Order:** Crawlers → BRS API → Navasan API (for Iranian market data)
+**Priority Order:** Crawlers (Bonbast → AlanChand) → Navasan API (for Iranian market data)
 
 **See [API_PROVIDERS.md](docs/API_PROVIDERS.md) for detailed provider information.**
 **See [CRAWLER_LOGIC.md](docs/CRAWLER_LOGIC.md) for crawler implementation details.**
@@ -60,14 +58,16 @@ python -m xrate
 ## 🚀 **Key Features**
 
 ### **Core Functionality**
-- 🔁 **Smart Posting**: Posts market updates based on configurable percentage thresholds
-- 💬 **Interactive Commands**: `/start`, `/irr`, `/health`, `/post`, `/language` with rate limiting
-- 🕷️ **Web Crawlers**: Direct price fetching from Bonbast and AlanChand websites
-- 🌍 **Multi-Source**: Crawlers → API fallback chains with provider attribution
-- 📊 **Change Tracking**: Shows percentage changes and elapsed time since last update
-- 🌐 **Multi-language**: English and Farsi (فارسی) support
-- 📈 **Statistics**: Activity tracking with daily summaries
+- 🔁 **Smart Posting**: Posts market updates based on consolidated percentage thresholds (currency upper/lower, gold upper/lower)
+- 💬 **Admin Commands**: `/irr`, `/health`, `/post`, `/posttest`, `/language` (admin-only)
+- 🕷️ **Web Crawlers**: Direct price fetching from Bonbast and AlanChand websites with TTL-based caching
+- 🌍 **Multi-Source Fallback**: Crawlers (Bonbast → AlanChand) → Navasan API with provider attribution
+- 📊 **Change Tracking**: Shows percentage changes and elapsed time in Persian format
+- 🌐 **Multi-language**: English and Farsi (فارسی) support (default: Persian)
+- 📈 **Statistics**: Activity tracking with daily summaries including crawler usage times and user feedback
 - 🤖 **AI Analysis**: Optional Farsi market analysis via Avalai API
+- ⏰ **Daily Morning Posts**: Automatic 8:00 AM posts (excluding Thursday and Friday)
+- 📝 **User Feedback**: Non-admin messages stored as feedback and included in daily reports
 
 ### **Enterprise Features**
 - 🛡️ **Security**: Input validation, namespaced rate limiting, configuration validation
@@ -89,15 +89,14 @@ CHANNEL_ID=@yourchannel
 ADMIN_USERNAME=YourUsername
 
 # API Keys
-FASTFOREX_KEY=your_fastforex_key
-NAVASAN_API_KEY=your_navasan_key
-BRSAPI_KEY=your_brsapi_key  # Optional but recommended
+NAVASAN_API_KEY=your_navasan_key  # Optional, for fallback when crawlers fail
 AVALAI_KEY=your_avalai_key  # Optional, for AI analysis
 
+# Channel Settings
+TEST_CHANNEL_ID=@yourtestchannel  # Optional, for test channel
+
 # Cache Settings (minutes)
-FASTFOREX_CACHE_MINUTES=15
 NAVASAN_CACHE_MINUTES=28
-BRSAPI_CACHE_MINUTES=15
 WALLEX_CACHE_MINUTES=15
 
 # Crawler Settings (Web scrapers for price data)
@@ -106,17 +105,14 @@ CRAWLER1_INTERVAL_MINUTES=37
 CRAWLER2_URL=https://alanchand.com/
 CRAWLER2_INTERVAL_MINUTES=43
 
-# Thresholds (% vs last announced)
-MARGIN_USD_UPPER_PCT=1.0      # USD price increase threshold
-MARGIN_USD_LOWER_PCT=2.0      # USD price decrease threshold
-MARGIN_EUR_UPPER_PCT=1.0      # EUR price increase threshold
-MARGIN_EUR_LOWER_PCT=2.0      # EUR price decrease threshold
-MARGIN_GOLD_UPPER_PCT=1.0     # Gold price increase threshold
-MARGIN_GOLD_LOWER_PCT=2.0     # Gold price decrease threshold
-MARGIN_EURUSD_UPPER_PCT=1.0   # EUR/USD rate increase threshold
-MARGIN_EURUSD_LOWER_PCT=2.0   # EUR/USD rate decrease threshold
-MARGIN_TETHER_UPPER_PCT=1.0   # Tether 24h change increase threshold
-MARGIN_TETHER_LOWER_PCT=2.0   # Tether 24h change decrease threshold
+# Thresholds (% vs last announced) - Consolidated thresholds
+MARGIN_CURRENCY_UPPER_PCT=1.0   # Currency (USD/EUR) price increase threshold
+MARGIN_CURRENCY_LOWER_PCT=2.0   # Currency (USD/EUR) price decrease threshold
+MARGIN_GOLD_UPPER_PCT=1.0       # Gold price increase threshold
+MARGIN_GOLD_LOWER_PCT=2.0       # Gold price decrease threshold
+
+# Language Settings
+DEFAULT_LANGUAGE=fa  # fa = Persian, en = English
 
 # HTTP Settings
 HTTP_TIMEOUT_SECONDS=10
@@ -133,13 +129,16 @@ LAST_STATE_FILE=./data/last_state.json
 
 ## 🤖 **Bot Commands**
 
+All commands are **admin-only** (configured via `ADMIN_USERNAME`). Non-admin users can send messages which will be stored as feedback and included in daily reports.
+
 | Command | Description | Access | Rate Limit |
 |---------|-------------|--------|------------|
-| `/start` | Get current market data with percentage changes | Public | 10/min |
-| `/irr` | Get Iranian market snapshot (USD/EUR/Gold) | Public | 10/min |
-| `/health` | Check system health and API status | Public | 5/min |
-| `/post` | Manually post market update to channel | Admin | 30/min |
+| `/irr` | Get Iranian market snapshot (USD/EUR/Gold) in Persian format | Admin | 30/min |
+| `/health` | Check system health (crawlers, APIs, Avalai wallet) | Admin | 5/min |
+| `/post` | Manually post market update to main channel | Admin | 30/min |
+| `/posttest` | Manually post market update to test channel | Admin | 30/min |
 | `/language` | Change bot language (English/Farsi) | Admin | 30/min |
+| Any text message | Admin: Shows market data<br>Non-admin: Stores as feedback | All | 10/min |
 
 **See [COMMANDS.md](docs/COMMANDS.md) for detailed command documentation and examples.**
 
@@ -153,7 +152,7 @@ xrate/
 │   ├── domain/             # Pure business logic (models, errors)
 │   ├── application/        # Use cases (rates_service, state_manager, stats, health)
 │   ├── adapters/           # External integrations
-│   │   ├── providers/      # API clients (BRS, FastForex, Navasan, Wallex)
+│   │   ├── providers/      # API clients (Navasan, Wallex)
 │   │   ├── crawlers/       # Web crawlers (Bonbast, AlanChand)
 │   │   ├── telegram/       # Bot handlers and jobs
 │   │   ├── formatting/     # Message formatting
@@ -265,7 +264,7 @@ make check      # Run all checks
 
 ## 🔍 **Monitoring & Health Checks**
 
-- **Health Monitoring**: BRS API, FastForex, Navasan, Wallex, Crawlers, State Manager, Data Pipeline
+- **Health Monitoring**: Crawlers (Bonbast, AlanChand), Navasan, Wallex, Avalai Wallet, State Manager, Data Pipeline
 - **Logging**: Structured logging with file rotation (optional)
 - **Rate Limiting**: Per-user limits with namespaced buckets (public/admin/health)
 - **Error Tracking**: Comprehensive exception handling with detailed logging
@@ -308,8 +307,6 @@ MIT License © 2025 **Masih Sadri**
 
 - **Bonbast.com** (bonbast.com) for web-crawled market data
 - **AlanChand.com** (alanchand.com) for web-crawled market data
-- **BRS API** (brsapi.ir) for primary market data
-- **FastForex.io** for exchange rate fallback
 - **Navasan.tech** for Iranian market fallback
 - **Wallex.ir** for Tether market data
 - **python-telegram-bot** team for the excellent framework

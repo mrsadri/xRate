@@ -96,7 +96,7 @@ from xrate.domain.models import IrrSnapshot  # Import from domain layer
 ```python
 # src/xrate/app.py (lines 35-38)
 from xrate.shared.logging_conf import setup_logging  # Configure logging
-from xrate.adapters.providers.fastforex import FastForexProvider  # API provider
+from xrate.adapters.crawlers.bonbast_crawler import BonbastCrawler  # Web crawler for market data
 ```
 
 ---

@@ -26,7 +26,6 @@ ENV/
 
 # 🔒 Credentials and configs
 .env
-*.env
 .env.*
 !.env.example
 config.json
@@ -73,13 +72,13 @@ logs/
 *.log
 *.log.*
 
+# 📁 Temporary directories
+tg/
+__pycache__/tg/
+
 # 📊 Data files (user-generated)
 data/last_state.json
 data/stats.json
 data/admin_store.json
 data/language.json
 data/*.json.corrupt
-
-# 🪄 Miscellaneous
-# Byte-compiled / optimized / DLL files
-__pycache__/tg/

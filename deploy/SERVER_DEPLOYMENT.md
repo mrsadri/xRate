@@ -166,11 +166,27 @@ BOT_TOKEN=your_bot_token_here
 CHANNEL_ID=@yourchannel
 ADMIN_USERNAME=YourUsername
 
-# API Keys
-FASTFOREX_KEY=your_key
-NAVASAN_API_KEY=your_key
-BRSAPI_KEY=your_key
-AVALAI_KEY=your_key  # Optional
+# API Keys (Optional - for fallback when crawlers fail)
+NAVASAN_API_KEY=your_key  # Optional, fallback when crawlers fail
+AVALAI_KEY=your_key  # Optional, for AI market analysis
+
+# Crawler Settings
+CRAWLER1_URL=https://www.bonbast.com/
+CRAWLER1_INTERVAL_MINUTES=37
+CRAWLER2_URL=https://alanchand.com/
+CRAWLER2_INTERVAL_MINUTES=43
+
+# Thresholds (Consolidated)
+MARGIN_CURRENCY_UPPER_PCT=1.0
+MARGIN_CURRENCY_LOWER_PCT=2.0
+MARGIN_GOLD_UPPER_PCT=1.0
+MARGIN_GOLD_LOWER_PCT=2.0
+
+# Language
+DEFAULT_LANGUAGE=fa  # Persian
+
+# Channels
+TEST_CHANNEL_ID=@yourtestchannel  # Optional
 
 # Logging (optional, for file-based logging)
 LOG_DIR=/opt/xrate/logs

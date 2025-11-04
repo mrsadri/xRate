@@ -993,10 +993,10 @@ sudo journalctl -u xrate
 ```bash
 BOT_TOKEN=your_bot_token_here          # From @BotFather on Telegram
 CHANNEL_ID=@yourchannel                 # Your Telegram channel username
-ADMIN_USERNAME=YourUsername         # Your Telegram username (without @)
-FASTFOREX_KEY=your_fastforex_key        # From fastforex.io
-NAVASAN_API_KEY=your_navasan_key        # From navasan.tech
-BRSAPI_KEY=your_brsapi_key              # From brsapi.ir
+TEST_CHANNEL_ID=@yourtestchannel       # Optional: Test channel for /posttest
+ADMIN_USERNAME=MasihSadri              # Admin username (without @)
+NAVASAN_API_KEY=your_navasan_key        # Optional: From navasan.tech (fallback when crawlers fail)
+AVALAI_KEY=your_avalai_key             # Optional: For AI market analysis
 ```
 
 ### Optional Variables (for server deployment)
@@ -1047,11 +1047,11 @@ sudo chown xrate:xrate /opt/xrate/.env
 - ✅ No need to open firewall ports
 - ✅ Connections to:
   - `api.telegram.org`
-  - `brsapi.ir`
-  - `api.fastforex.io`
-  - `api.navasan.tech`
-  - `api.wallex.ir`
-  - `api.avalai.ir` (if using Avalai)
+  - `www.bonbast.com` (web crawler)
+  - `alanchand.com` (web crawler)
+  - `api.navasan.tech` (optional, fallback)
+  - `api.wallex.ir` (optional, for Tether)
+  - `api.avalai.ir` (optional, if using Avalai)
 
 ---
 

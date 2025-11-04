@@ -25,7 +25,8 @@ The architecture consists of four main layers:
 │                 Application Layer                            │
 │  Use cases and business logic orchestration                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
-│  │ RatesService │  │StateManager  │  │  HealthChecker    │ │
+│  │ get_irr_     │  │StateManager  │  │  HealthChecker    │ │
+│  │ snapshot()   │  │              │  │                   │ │
 │  │ StatsTracker │  │              │  │                   │ │
 │  └──────────────┘  └──────────────┘  └──────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
@@ -37,10 +38,10 @@ The architecture consists of four main layers:
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
 │  │  Providers   │  │  Telegram    │  │   Persistence    │ │
 │  │  (APIs)      │  │  (Bot)       │  │   (File Store)   │ │
-│  │  - BRS       │  │  - Handlers  │  │   - State        │ │
-│  │  - FastForex │  │  - Jobs      │  │   - Stats        │ │
-│  │  - Navasan   │  │  - Formatting│  │   - Admin        │ │
-│  │  - Wallex    │  │              │  │                   │ │
+│  │  - Crawlers  │  │  - Handlers  │  │   - State        │ │
+│  │  - Navasan   │  │  - Jobs      │  │   - Stats        │ │
+│  │  - Wallex    │  │  - Formatting│  │   - Admin        │ │
+│  │  - Avalai    │  │              │  │                   │ │
 │  └──────────────┘  └──────────────┘  └──────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
                             ▲
@@ -98,10 +99,13 @@ Shared Layer (used by all layers)
 **Purpose**: Use cases and business logic orchestration
 
 **Components**:
-- **RatesService** (`rates_service.py`): Core business logic
-  - Provider orchestration (ProviderChain pattern)
-  - EUR/USD rate fetching with fallback
+- **get_irr_snapshot()** (`rates_service.py`): Core business logic
+  - Crawler-first data fetching with API fallback
+  - Iranian market data (USD/EUR/Gold) fetching
   - High-level domain services
+- **get_crawler_snapshot()** (`crawler_service.py`): Crawler service
+  - Bonbast → AlanChand fallback logic
+  - Tracks crawler usage times
 
 - **StateManager** (`state_manager.py`): State management
   - Manages market state with persistence
@@ -131,33 +135,36 @@ Shared Layer (used by all layers)
 
 **Sub-layers**:
 
-#### 3.1 Providers (`adapters/providers/`)
-- **BRSAPIProvider**: Primary provider for Iranian market and EUR/USD
-- **FastForexProvider**: Fallback for EUR/USD rates
-- **NavasanProvider**: Fallback for Iranian market data
+#### 3.1 Crawlers (`adapters/crawlers/`)
+- **BonbastCrawler**: Primary crawler for Iranian market data (USD/EUR/Gold)
+- **AlanChandCrawler**: Fallback crawler for Iranian market data (USD/EUR/Gold)
+- **Base Crawler**: `BaseCrawler` abstract class with TTL-based caching
+
+#### 3.2 Providers (`adapters/providers/`)
+- **NavasanProvider**: Fallback API for Iranian market data (when crawlers fail)
 - **WallexProvider**: Standalone Tether (USDT-TMN) provider
 - **Base Protocol**: `RateProvider` interface for type checking
 
-#### 3.2 Telegram (`adapters/telegram/`)
+#### 3.3 Telegram (`adapters/telegram/`)
 - **bot.py**: Bot application builder
-- **handlers.py**: Command handlers (`/start`, `/irr`, `/health`, `/post`, `/language`)
-- **jobs.py**: Scheduled jobs (auto-posting, daily summaries, startup notifications)
+- **handlers.py**: Command handlers (`/irr`, `/health`, `/post`, `/posttest`, `/language`) - admin only
+- **jobs.py**: Scheduled jobs (auto-posting, daily morning posts, daily summaries, crawler jobs, startup notifications)
 
-#### 3.3 Formatting (`adapters/formatting/`)
+#### 3.4 Formatting (`adapters/formatting/`)
 - **formatter.py**: Message formatting utilities
   - Market data formatting
   - Percentage change calculations
   - Multi-language support integration
   - Time formatting (elapsed time display)
 
-#### 3.4 Persistence (`adapters/persistence/`)
+#### 3.5 Persistence (`adapters/persistence/`)
 - **file_store.py**: JSON file storage for state
   - Atomic writes with temporary files
   - Graceful corruption handling
   - Schema validation and recovery
 - **admin_store.py**: Admin user ID storage
 
-#### 3.5 AI (`adapters/ai/`)
+#### 3.6 AI (`adapters/ai/`)
 - **avalai.py**: Avalai API client for market analysis
   - Non-blocking integration
   - Optional feature (graceful degradation)
@@ -202,22 +209,19 @@ Shared Layer (used by all layers)
 
 ## Design Patterns
 
-### 1. Provider Chain Pattern
+### 1. Crawler Fallback Pattern
 
-Sequential fallback mechanism for data providers:
+Sequential fallback mechanism for data sources:
 
 ```
-EUR/USD Rate Chain:
-  BRS API (Primary) → FastForex (Fallback)
-
-Iranian Market Chain:
-  BRS API (Primary) → Navasan (Fallback)
+Iranian Market Chain (USD/EUR/Gold):
+  Bonbast Crawler (Primary) → AlanChand Crawler (Fallback) → Navasan API (Final Fallback)
 
 Tether Chain:
-  Wallex (Standalone, no fallback)
+  Wallex API (Standalone, optional, no fallback)
 ```
 
-**Implementation**: `ProviderChain` class in `rates_service.py`
+**Implementation**: `get_crawler_snapshot()` in `crawler_service.py` with fallback to `get_irr_snapshot()` in `rates_service.py`
 
 ### 2. Strategy Pattern
 
@@ -233,7 +237,8 @@ Interchangeable providers via `RateProvider` protocol:
 
 Business logic separated from data access:
 
-- `RatesService`: Orchestrates rate fetching
+- `get_irr_snapshot()`: Orchestrates data fetching (crawlers → Navasan)
+- `get_crawler_snapshot()`: Crawler service with fallback logic
 - `StateManager`: Manages state persistence
 - Services coordinate adapters, don't know implementation details
 
@@ -247,9 +252,10 @@ Data persistence abstraction:
 
 ### 5. Dependency Injection
 
-Providers injected via constructor:
+Services use direct function calls:
 
-- `RatesService` receives `RateProvider` instance
+- `get_irr_snapshot()` calls `get_crawler_snapshot()` directly
+- Providers instantiated within services as needed
 - Easy to mock for testing
 - Flexible provider configuration
 
@@ -289,8 +295,8 @@ Message formatting with conditional display:
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Application Layer                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
-│  │ RatesService │  │ StateManager │  │   HealthChecker          │  │
-│  │ (Business)   │  │(Persistence) │  │   (Monitoring)           │  │
+│  │ get_irr_     │  │ StateManager │  │   HealthChecker          │  │
+│  │ snapshot()   │  │(Persistence) │  │   (Monitoring)           │  │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────────────┘  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
 │  │ StatsTracker │  │              │  │                          │  │
@@ -300,16 +306,12 @@ Message formatting with conditional display:
           │                  │
           ▼                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Provider Chain Layer                              │
+│                    Data Source Layer                               │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Provider Chain: EUR/USD Rate                                │   │
-│  │  1. BRS API (Primary) ──┐                                    │   │
-│  │  2. FastForex (Fallback)└─► RatesService.eur_usd()          │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Provider Chain: Iranian Market (USD/EUR/Gold)               │   │
-│  │  1. BRS API (Primary) ──┐                                    │   │
-│  │  2. Navasan (Fallback)  └─► get_irr_snapshot()              │   │
+│  │  Data Source Chain: Iranian Market (USD/EUR/Gold)            │   │
+│  │  1. Bonbast Crawler (Primary) ──┐                           │   │
+│  │  2. AlanChand Crawler (Fallback)│                           │   │
+│  │  3. Navasan API (Final Fallback)└─► get_irr_snapshot()     │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  Provider: Tether (USDT-TMN)                                │   │
@@ -320,8 +322,8 @@ Message formatting with conditional display:
           │                  │
           ▼                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      External APIs                                  │
-│  • BRS API • FastForex • Navasan • Wallex • Avalai                │
+│                      External Data Sources                         │
+│  • Bonbast.com • AlanChand.com • Navasan API • Wallex • Avalai   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -343,36 +345,34 @@ User Command/Job Trigger
             ▼
 ┌───────────────────────┐
 │  Application Layer    │
-│  - RatesService       │
+│  - get_irr_snapshot() │
 │  - StateManager       │
 │  - StatsTracker       │
 └───────────┬───────────┘
             │
             ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Provider Chain (Fallback Strategy)                     │
+│  Data Source Chain (Fallback Strategy)                  │
 │                                                         │
-│  EUR/USD Rate Chain:                                     │
-│    BRS API (Primary) → FastForex (Fallback)             │
-│                                                          │
 │  Iranian Market Chain (USD/EUR/Gold):                  │
-│    BRS API (Primary) → Navasan (Fallback)              │
+│    Bonbast Crawler (Primary) → AlanChand Crawler        │
+│    (Fallback) → Navasan API (Final Fallback)            │
 │                                                          │
 │  Tether (USDT-TMN):                                     │
-│    Wallex (Standalone, optional, no fallback)           │
+│    Wallex API (Standalone, optional, no fallback)       │
 │                                                         │
-│  Each provider has:                                    │
-│  - TTL-based caching (15-28 min)                        │
-│  - Per-provider TTL tracking                            │
+│  Each data source has:                                 │
+│  - TTL-based caching (crawlers: 37-43 min, APIs: 15-28 min)│
+│  - Per-source TTL tracking                             │
 │  - Error handling & retries                            │
 │  - Request timeouts                                    │
 └───────────┬─────────────────────────────────────────────┘
             │
             ▼
 ┌───────────────────────┐
-│  External APIs        │
-│  - BRS API            │
-│  - FastForex API      │
+│  External Data Sources│
+│  - Bonbast.com        │
+│  - AlanChand.com      │
 │  - Navasan API        │
 │  - Wallex API         │
 └───────────┬───────────┘
@@ -420,13 +420,15 @@ User Command/Job Trigger
 - **Errors**: Domain-specific exceptions
 
 ### 🔧 Application Layer (`src/xrate/application/`)
-- **RatesService**: Core business logic, provider orchestration
+- **get_irr_snapshot()**: Core business logic, crawler-first with API fallback
+- **get_crawler_snapshot()**: Crawler service with fallback logic
 - **StateManager**: Manages market state with persistence
-- **StatsTracker**: Tracks bot activity, posts, errors, provider usage
-- **HealthChecker**: Monitors system and API health
+- **StatsTracker**: Tracks bot activity, posts, errors, provider usage, user feedback
+- **HealthChecker**: Monitors system, crawlers, APIs, and Avalai wallet
 
 ### 🌐 Adapters Layer (`src/xrate/adapters/`)
-- **Providers**: External API integrations (BRS, FastForex, Navasan, Wallex)
+- **Crawlers**: Web scraping clients (Bonbast, AlanChand)
+- **Providers**: External API integrations (Navasan, Wallex)
 - **Telegram**: Bot handlers, jobs, and messaging
 - **Formatting**: Message formatting and presentation
 - **Persistence**: File-based storage (JSON)
@@ -453,7 +455,7 @@ User Command/Job Trigger
 ## Error Handling Strategy
 
 - **Domain Errors**: Business logic exceptions (defined in `domain/errors.py`)
-- **Provider Errors**: Graceful fallback chains (BRS → FastForex/Navasan)
+- **Crawler/Provider Errors**: Graceful fallback chains (Bonbast → AlanChand → Navasan)
 - **Persistence Errors**: Corruption recovery with backup files
 - **Network Errors**: Timeout handling, retry logic, graceful degradation
 - **Job Errors**: Non-blocking error handling (Avalai failures don't affect main jobs)

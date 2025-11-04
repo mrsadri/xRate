@@ -28,6 +28,69 @@ LANG_FARSI = "fa"
 # Default language file path
 DEFAULT_LANG_FILE = "./data/language.json"
 
+# Persian number formatting helper
+def get_provider_name_persian(provider: str) -> str:
+    """
+    Get Persian name for a provider.
+    
+    Args:
+        provider: Provider identifier (e.g., "wallex", "crawler2_alanchand", "crawler1_bonbast", "navasan")
+        
+    Returns:
+        Persian provider name
+    """
+    provider_map = {
+        "wallex": "ولکس",
+        "crawler1_bonbast": "بن‌بست",
+        "crawler2_alanchand": "الان‌چند",
+        "navasan": "نوسان",
+    }
+    
+    # Handle provider names that might have prefixes
+    for key, persian_name in provider_map.items():
+        if key in provider.lower():
+            return persian_name
+    
+    # Default: return original if not found
+    return provider
+
+
+def format_persian_number(num: int) -> str:
+    """
+    Format number in Persian style: "X هزار و Y" or "X میلیون و Y هزار"
+    
+    Args:
+        num: Integer to format
+        
+    Returns:
+        Formatted Persian number string
+    """
+    if num < 1000:
+        return str(num)
+    
+    if num < 1_000_000:
+        thousands = num // 1000
+        remainder = num % 1000
+        if remainder == 0:
+            return f"{thousands} هزار"
+        else:
+            return f"{thousands} هزار و {remainder}"
+    
+    millions = num // 1_000_000
+    remainder = num % 1_000_000
+    if remainder == 0:
+        return f"{millions} میلیون"
+    elif remainder < 1000:
+        return f"{millions} میلیون و {remainder}"
+    else:
+        thousands = remainder // 1000
+        remainder_hundreds = remainder % 1000
+        if remainder_hundreds == 0:
+            return f"{millions} میلیون و {thousands} هزار"
+        else:
+            return f"{millions} میلیون و {thousands} هزار و {remainder_hundreds}"
+
+
 # Translation dictionaries
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     LANG_ENGLISH: {
@@ -39,16 +102,20 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "time_elapsed": "Time spent from previous announcement: {elapsed}",
         "reported_by": "Reported by {providers}",
         "no_data": "No market data available",
+        "market_update_header": "New market fluctuation observed",
+        "daily_report_header": "Daily price report:",
     },
     LANG_FARSI: {
-        "usd_line": "(دلار 💵) ۱ دلار   = {value} هزارتومان        {change}",
-        "eur_line": "(یورو 💶) ۱ یورو  = {value} هزارتومان         {change}",
-        "gold_line": "(طلا 🏆) ۱ گرم = {value} میلیون‌تومان     {change}",
+        "usd_line": "دلار: {value}         {change}",
+        "eur_line": "یورو : {value}          {change}",
+        "gold_line": "طلا: {value}     {change}",
         "eurusd_line": "(یورو 💶) ۱ یورو  = ${value} (دلار 💵)  {change}",
         "tether_line": "(تتر 💎) ۱ تتر = {value} هزارتومان     {change_pct}% {arrow}",
-        "time_elapsed": "زمان سپری شده از اعلامیه قبلی: {elapsed}",
+        "time_elapsed": "مدت آرامش بازار: {elapsed}",
         "reported_by": "گزارش شده توسط {providers}",
         "no_data": "داده‌های بازار در دسترس نیست",
+        "market_update_header": "نوسان جدید نبش بازار مشاهده شد",
+        "daily_report_header": "گزارش روزانه قیمت‌ها:",
     }
 }
 
@@ -64,7 +131,9 @@ class LanguageManager:
             lang_file: Path to language preference file
         """
         self.lang_file = Path(lang_file)
-        self._current_language: str = LANG_ENGLISH
+        # Default to Persian unless explicitly set
+        from xrate.config import settings
+        self._current_language: str = settings.default_language if hasattr(settings, 'default_language') else LANG_FARSI
         self._load_language()
     
     def _load_language(self) -> None:
@@ -73,17 +142,19 @@ class LanguageManager:
             if self.lang_file.exists():
                 with self.lang_file.open("r", encoding="utf-8") as f:
                     data = json.load(f)
-                    lang = data.get("language", LANG_ENGLISH)
+                    lang = data.get("language", LANG_FARSI)  # Default to Persian
                     if lang in [LANG_ENGLISH, LANG_FARSI]:
                         self._current_language = lang
                         logger.info("Loaded language preference: %s from file: %s", lang, self.lang_file)
                     else:
                         logger.warning("Invalid language in file: %s, using default", lang)
             else:
-                logger.info("Language file not found (%s), using default (English)", self.lang_file)
+                logger.info("Language file not found (%s), using default (Persian)", self.lang_file)
         except Exception as e:
             logger.error("Failed to load language preference from %s: %s", self.lang_file, e)
-            self._current_language = LANG_ENGLISH
+            # Default to Persian
+            from xrate.config import settings
+            self._current_language = settings.default_language if hasattr(settings, 'default_language') else LANG_FARSI
     
     def _save_language(self) -> None:
         """Save language preference to file."""
@@ -187,4 +258,34 @@ def set_language(lang: str) -> bool:
 def translate(key: str, **kwargs: Any) -> str:
     """Translate a message key."""
     return language_manager.translate(key, **kwargs)
+
+
+def translate_provider_name(provider: Optional[str]) -> str:
+    """
+    Translate provider name to current language.
+    
+    Args:
+        provider: Provider identifier or None
+        
+    Returns:
+        Translated provider name
+    """
+    if not provider:
+        return "unknown"
+    
+    current_lang = language_manager.get_language()
+    if current_lang == LANG_FARSI:
+        return get_provider_name_persian(provider)
+    else:
+        # English: return original or map to readable name
+        provider_map = {
+            "wallex": "Wallex",
+            "crawler1_bonbast": "Bonbast",
+            "crawler2_alanchand": "AlanChand",
+            "navasan": "Navasan",
+        }
+        for key, name in provider_map.items():
+            if key in provider.lower():
+                return name
+        return provider
 
