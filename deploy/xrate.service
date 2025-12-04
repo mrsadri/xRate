@@ -1,0 +1,59 @@
+# /etc/systemd/system/xrate.service
+# Systemd service file for XRate Telegram Bot
+#
+# Installation:
+#   1. Copy this file to /etc/systemd/system/xrate.service
+#   2. Edit the file and update paths, user, and group
+#   3. Reload systemd: sudo systemctl daemon-reload
+#   4. Enable service: sudo systemctl enable xrate
+#   5. Start service: sudo systemctl start xrate
+#
+# Management:
+#   - Start:   sudo systemctl start xrate
+#   - Stop:    sudo systemctl stop xrate
+#   - Restart: sudo systemctl restart xrate
+#   - Status:  sudo systemctl status xrate
+#   - Logs:    sudo journalctl -u xrate -f
+#   - Logs (last 100 lines): sudo journalctl -u xrate -n 100
+
+[Unit]
+Description=XRate Telegram Bot - Market Rate Monitor
+Documentation=https://github.com/mrsadri/xRate
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xrate
+Group=xrate
+WorkingDirectory=/opt/xrate
+Environment="PATH=/opt/xrate/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Start command
+ExecStart=/opt/xrate/.venv/bin/python -m xrate
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/xrate/data
+ProtectHome=true
+
+# Resource limits (optional - adjust as needed)
+# LimitNOFILE=65536
+# MemoryMax=512M
+
+# Standard output/error
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xrate
+
+[Install]
+WantedBy=multi-user.target
+
