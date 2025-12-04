@@ -38,6 +38,13 @@ from xrate.adapters.providers.wallex import WallexProvider  # Wallex API provide
 from xrate.adapters.ai.avalai import AvalaiService  # AI-powered market analysis service
 from xrate.config import settings  # Application configuration and settings
 
+# Optional news fetcher import (may not exist yet)
+try:
+    from xrate.adapters.news.bbc_persian_fetcher import BBCPersianFetcher
+    _NEWS_FETCHER_AVAILABLE = True
+except ImportError:
+    _NEWS_FETCHER_AVAILABLE = False
+
 
 # Hysteresis state: track last breach direction per instrument to prevent flip-flop
 _breach_history: dict[str, Optional[str]] = {}  # key: instrument, value: "up"/"down"/None
@@ -330,13 +337,25 @@ async def post_rate_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 
                 # Generate Avalai analysis once (if configured) - reduces API calls
+                # First, try to fetch recent news to provide context
+                news_context = None
+                if _NEWS_FETCHER_AVAILABLE:
+                    try:
+                        news_fetcher = BBCPersianFetcher()
+                        news_result = news_fetcher.fetch()
+                        news_context = news_fetcher.format_news_for_prompt(news_result)
+                        logger.debug("Fetched %d news items from BBC Persian for Avalai context", len(news_result.items))
+                    except Exception as e:
+                        logger.debug("Failed to fetch news for Avalai context (non-blocking): %s", e)
+                        # Continue without news context
+                
                 analysis_text = None
                 try:
                     avalai = _get_avalai_service()
                     if avalai and avalai.client:
                         try:
                             analysis_text = await asyncio.wait_for(
-                                avalai.generate_analysis(price_message=text),
+                                avalai.generate_analysis(price_message=text, news_context=news_context),
                                 timeout=30.0
                             )
                         except asyncio.TimeoutError:
